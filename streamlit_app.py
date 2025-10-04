@@ -4,7 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-# Try Altair for the nice stacked chart (fallback to table if not available)
+# Try Altair for the stacked chart (fallback to table if not available)
 try:
     import altair as alt
     ALT_AVAILABLE = True
@@ -35,7 +35,7 @@ FEDERAL_BRACKETS_2025_MARRIED = [
     (752600, 0.37),
 ]
 
-# Virginia brackets use "start-of-bracket" style as well
+# Virginia brackets use "start-of-bracket" style
 VIRGINIA_BRACKETS_2025 = [
     (0, 0.02),
     (3000, 0.03),
@@ -57,7 +57,6 @@ def calculate_tax(taxable_income: float, brackets: list[tuple[int, float]]) -> f
     """
     if taxable_income <= 0:
         return 0.0
-
     tax = 0.0
     n = len(brackets)
     for i, (start, rate) in enumerate(brackets):
@@ -69,7 +68,7 @@ def calculate_tax(taxable_income: float, brackets: list[tuple[int, float]]) -> f
             tax += span * rate
     return max(tax, 0.0)
 
-def money(x):  # quick pretty money format
+def money(x):  # pretty money format
     return f"${x:,.0f}"
 
 def pct(x):
@@ -89,7 +88,7 @@ with st.expander("Assumptions", expanded=False):
         "- Virginia 529 deduction capped at **$4,000**.\n"
         "- Pension contributions reduce AGI (treated like employer/mandatory pre-tax).\n"
         "- **Safe Withdrawal Rate (SWR)** drives FI targets (default 4%).\n"
-        "- Simplified model (ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, etc.)."
+        "- Simplified model: ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc."
     )
 
 # ---- Sidebar Inputs ----
@@ -101,40 +100,69 @@ gross_salary = st.sidebar.number_input("Gross Salary ($)", value=100000, step=10
 pension_percent = st.sidebar.slider("Pension Contribution (% of Salary)", 0, 20, 5) / 100
 annual_expenses = st.sidebar.number_input("Annual Expenses ($)", value=40000, step=1000)
 
-# 🔥 NEW: Safe Withdrawal Rate control
+# SWR control
 swr_percent = st.sidebar.number_input("Safe Withdrawal Rate (%)", min_value=2.0, max_value=7.0, value=4.0, step=0.1)
-swr = swr_percent / 100.0  # decimal; e.g., 4% => 0.04
+swr = swr_percent / 100.0
 
 current_investments = st.sidebar.number_input("Current Total Investment Value ($)", value=50000, step=1000)
 expected_return = st.sidebar.number_input("Expected Annual Investment Growth Rate (%)", value=5.0, step=0.1) / 100
 retirement_age = st.sidebar.number_input("Normal Retirement Age", value=58.5, step=0.5)
 
-st.sidebar.header("Choose Accounts to Contribute To")
-account_types = {
-    "403(b) Traditional": st.sidebar.checkbox("403(b) Traditional"),
-    "403(b) Roth": st.sidebar.checkbox("403(b) Roth"),
-    "457(b) Traditional": st.sidebar.checkbox("457(b) Traditional"),
-    "457(b) Roth": st.sidebar.checkbox("457(b) Roth"),
-    "401(a) Employee": st.sidebar.checkbox("401(a) Employee Contribution"),
-    "401(a) Employer": st.sidebar.checkbox("401(a) Employer Contribution"),
-    "Solo 401(k) Employee": st.sidebar.checkbox("Solo 401(k) Employee Contribution"),
-    "Solo 401(k) Employer": st.sidebar.checkbox("Solo 401(k) Employer Contribution"),
-    "SEP IRA": st.sidebar.checkbox("SEP IRA"),
-    "SIMPLE IRA": st.sidebar.checkbox("SIMPLE IRA"),
-    "Traditional IRA": st.sidebar.checkbox("Traditional IRA"),
-    "Roth IRA": st.sidebar.checkbox("Roth IRA"),
-    "HSA": st.sidebar.checkbox("HSA"),
-    "FSA": st.sidebar.checkbox("FSA"),
-    "529 Plan": st.sidebar.checkbox("529 Plan"),
-    "ESA": st.sidebar.checkbox("ESA"),
-    "Taxable Brokerage Account": st.sidebar.checkbox("Taxable Brokerage Savings"),
-}
+# ===========================================
+# ---- Accounts (Core vs More, with Crypto) --
+# ===========================================
 
+st.sidebar.header("Choose Accounts to Contribute To")
+
+# Core, short list:
+with st.sidebar.container():
+    st.markdown("**Core account types**")
+    core_accounts = {
+        "Brokerage": st.checkbox("Brokerage"),
+        "Crypto": st.checkbox("Crypto"),
+        "Traditional IRA": st.checkbox("Traditional IRA"),
+        "Roth IRA": st.checkbox("Roth IRA"),
+        "457(b) Traditional": st.checkbox("457(b) Traditional"),
+        "457(b) Roth": st.checkbox("457(b) Roth"),
+        "403(b) Traditional": st.checkbox("403(b) Traditional"),
+        "403(b) Roth": st.checkbox("403(b) Roth"),
+    }
+
+# Everything else collapsed:
+with st.sidebar.expander("More account types (optional)"):
+    more_accounts = {
+        "401(a) Employee": st.checkbox("401(a) Employee Contribution"),
+        "401(a) Employer": st.checkbox("401(a) Employer Contribution"),
+        "Solo 401(k) Employee": st.checkbox("Solo 401(k) Employee Contribution"),
+        "Solo 401(k) Employer": st.checkbox("Solo 401(k) Employer Contribution"),
+        "SEP IRA": st.checkbox("SEP IRA"),
+        "SIMPLE IRA": st.checkbox("SIMPLE IRA"),
+        "HSA": st.checkbox("HSA"),
+        "FSA": st.checkbox("FSA"),
+        "529 Plan": st.checkbox("529 Plan"),
+        "ESA": st.checkbox("ESA"),
+    }
+
+# Contributions
 st.sidebar.header("Annual Contributions ($/year)")
 contributions = {}
-for account, enabled in account_types.items():
+for account, enabled in {**core_accounts, **more_accounts}.items():
     if enabled:
-        contributions[account] = st.sidebar.number_input(f"{account} Contribution ($)", value=0, step=500)
+        key = ("core_" if account in core_accounts else "more_") + account
+        contributions[account] = st.sidebar.number_input(f"{account} Contribution ($)", value=0, step=500, key=key)
+
+# ---- Contribution limits helper (editable hints) ----
+with st.sidebar.expander("Contribution limit tips (edit as needed)"):
+    st.caption("Quick-reference fields you can tweak—verify annually from IRS/plan docs.")
+    hints = {
+        "IRA (Traditional/Roth) combined": st.number_input("IRA annual limit ($)", value=7000, step=500, key="hint_ira"),
+        "457(b) employee deferral": st.number_input("457(b) annual limit ($)", value=23000, step=500, key="hint_457"),
+        "403(b) employee deferral": st.number_input("403(b) annual limit ($)", value=23000, step=500, key="hint_403"),
+        "HSA (family)": st.number_input("HSA annual limit ($)", value=8300, step=100, key="hint_hsa"),
+        "FSA (health)": st.number_input("FSA annual limit ($)", value=3200, step=50, key="hint_fsa"),
+        "529 (VA deduction hint)": st.number_input("VA 529 deductible amount used ($)", value=4000, step=500, key="hint_529"),
+    }
+    st.caption("Note: the app **warns** but does **not** enforce limits.")
 
 # ---- Brackets & Deduction by Filing Status ----
 if filing_status == "Single":
@@ -144,6 +172,56 @@ else:
     federal_brackets = FEDERAL_BRACKETS_2025_MARRIED
     standard_deduction = STANDARD_DEDUCTION_2025_MARRIED
 
+# ==============================================
+# ---- Granular Balances & Per-Account Returns --
+# ==============================================
+
+st.sidebar.header("Granular balances & returns (optional)")
+granular_mode = st.sidebar.checkbox("Enable granular balances & per-account returns")
+
+ALL_ACCOUNTS = list(core_accounts.keys()) + list(more_accounts.keys())
+account_start_balances = {}
+account_returns = {}
+
+if granular_mode:
+    st.sidebar.caption("Specify starting balances & expected returns for any accounts you want. "
+                       "Anything unassigned goes to 'Other Investments' using the global return.")
+    chosen_accounts = st.sidebar.multiselect(
+        "Accounts with explicit starting balance & return",
+        options=ALL_ACCOUNTS,
+        default=["Brokerage", "Crypto"]
+    )
+
+    for acct in chosen_accounts:
+        account_start_balances[acct] = st.sidebar.number_input(
+            f"{acct} starting balance ($)", min_value=0.0, value=0.0, step=1000.0, key=f"bal_{acct}"
+        )
+        account_returns[acct] = st.sidebar.number_input(
+            f"{acct} expected annual return (%)", min_value=-50.0, max_value=50.0,
+            value=round(expected_return * 100, 1), step=0.5, key=f"ret_{acct}"
+        ) / 100.0
+
+    with st.sidebar.expander("Set returns for additional accounts (no starting balances)"):
+        for acct in [a for a in ALL_ACCOUNTS if a not in chosen_accounts]:
+            if st.checkbox(f"Set return for {acct}", key=f"setret_{acct}"):
+                account_returns[acct] = st.number_input(
+                    f"{acct} expected annual return (%)", min_value=-50.0, max_value=50.0,
+                    value=round(expected_return * 100, 1), step=0.5, key=f"ret_only_{acct}"
+                ) / 100.0
+
+    specified_total = sum(account_start_balances.values())
+    other_start = max(current_investments - specified_total, 0)
+    other_return = st.sidebar.number_input(
+        "Other Investments expected annual return (%)",
+        min_value=-50.0, max_value=50.0,
+        value=round(expected_return * 100, 1), step=0.5, key="ret_other"
+    ) / 100.0
+else:
+    chosen_accounts = []
+    specified_total = 0.0
+    other_start = current_investments
+    other_return = expected_return
+
 # =========================
 # ---- Main Calculations ----
 # =========================
@@ -152,25 +230,28 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
     # Pension is pre-tax and always included in both baseline & scenario
     pension_contribution = gross_salary * pension_percent
 
-    # --- Scenario with user-selected contributions ---
+    # Scenario AGI
     agi = gross_salary - pension_contribution
 
-    # Pre-tax (AGI-reducing) contributions
+    # Employee pre-tax (AGI-reducing)
     agi_reducing_accounts = [
         "403(b) Traditional", "457(b) Traditional",
         "401(a) Employee", "Solo 401(k) Employee",
         "SEP IRA", "SIMPLE IRA", "Traditional IRA",
         "HSA", "FSA"
     ]
+
+    # Employer-funded (no AGI impact; no take-home impact)
+    employer_funded_accounts = ["401(a) Employer"]
+
     for acct in agi_reducing_accounts:
         agi -= contributions.get(acct, 0)
 
-    # Virginia 529 (deduct up to $4,000)
+    # Virginia 529 deduction up to $4,000
     va_529_deduction = min(contributions.get("529 Plan", 0), 4000)
     agi -= va_529_deduction
 
     taxable_income = max(agi - standard_deduction, 0)
-
     federal_tax = calculate_tax(taxable_income, federal_brackets)
     state_tax = calculate_tax(taxable_income, VIRGINIA_BRACKETS_2025)
     total_tax = federal_tax + state_tax
@@ -179,10 +260,36 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
     after_tax_income = gross_salary - pension_contribution - total_tax
 
     total_savings = sum(contributions.values())
+    pre_tax_sum = sum(contributions.get(a, 0) for a in agi_reducing_accounts) + va_529_deduction
+    employer_sum = sum(contributions.get(a, 0) for a in employer_funded_accounts)
 
-    # Post-tax savings = total elective savings NOT counted as AGI-reducing (i.e., Roth/taxable/etc.)
-    post_tax_savings = total_savings - sum(contributions.get(a, 0) for a in agi_reducing_accounts) - va_529_deduction
+    # Post-tax savings that DO reduce take-home (Roth, Brokerage, Crypto, ESA, etc.)
+    post_tax_savings = total_savings - pre_tax_sum - employer_sum
     disposable_income = after_tax_income - post_tax_savings
+
+    # -------------------------
+    # Contribution Warnings (non-blocking)
+    # -------------------------
+    ira_total = contributions.get("Traditional IRA", 0) + contributions.get("Roth IRA", 0)
+    if ira_total > hints["IRA (Traditional/Roth) combined"]:
+        st.warning(f"IRA combined contributions {money(ira_total)} exceed your hint of {money(hints['IRA (Traditional/Roth) combined'])}.")
+
+    def warn_pair(a_name, b_name, hint_key, label):
+        total = contributions.get(a_name, 0) + contributions.get(b_name, 0)
+        limit = hints[hint_key]
+        if total > limit:
+            st.warning(f"{label} contributions {money(total)} exceed your hint of {money(limit)}.")
+    warn_pair("457(b) Traditional", "457(b) Roth", "457(b) employee deferral", "457(b)")
+    warn_pair("403(b) Traditional", "403(b) Roth", "403(b) employee deferral", "403(b)")
+
+    if contributions.get("HSA", 0) > hints["HSA (family)"]:
+        st.warning(f"HSA contribution {money(contributions.get('HSA', 0))} exceeds your hint of {money(hints['HSA (family)'])}.")
+    if contributions.get("FSA", 0) > hints["FSA (health)"]:
+        st.warning(f"FSA contribution {money(contributions.get('FSA', 0))} exceeds your hint of {money(hints['FSA (health)'])}.")
+    if contributions.get("529 Plan", 0) > hints["529 (VA deduction hint)"]:
+        st.info(f"VA 529: You entered {money(contributions.get('529 Plan', 0))}. Only {money(hints['529 (VA deduction hint)'])} is used for state deduction per your hint; remainder still contributes to savings.")
+    if post_tax_savings > after_tax_income:
+        st.warning("Post-tax savings exceed after-tax income. Disposable income is negative; charts clamp it to $0 where needed.")
 
     # =========================
     # ---- FIRE Summary ----
@@ -197,7 +304,9 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
             "Total Taxes Paid",
             "Effective Tax Rate (on Gross Salary)",
             "After-Tax Income (after pension & taxes)",
-            "Total Annual Savings (all accounts)",
+            "Total Annual Savings (all sources)",
+            "Employee-Funded Savings (affects take-home)",
+            "Employer-Funded Savings (no take-home impact)",
             "Savings Rate (on Gross Salary)",
             "Disposable Income (After Taxes & Post-Tax Savings)"
         ],
@@ -210,7 +319,9 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
             pct(effective_tax_rate),
             money(after_tax_income),
             money(total_savings),
-            pct(total_savings / gross_salary if gross_salary > 0 else 0.0),
+            money(total_savings - employer_sum),
+            money(employer_sum),
+            pct((total_savings) / gross_salary if gross_salary > 0 else 0.0),
             money(disposable_income)
         ]
     })
@@ -218,15 +329,17 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
 
     # ---- Contributions Table ----
     st.subheader("📚 Contributions Detail")
-    contribs = sorted([(k, v) for k, v in contributions.items()], key=lambda x: x[0])
-    st.dataframe(pd.DataFrame(contribs, columns=["Account", "Annual Contribution ($)"]))
+    if contributions:
+        contribs = sorted([(k, v) for k, v in contributions.items()], key=lambda x: x[0])
+        st.dataframe(pd.DataFrame(contribs, columns=["Account", "Annual Contribution ($)"]))
+    else:
+        st.info("No contributions selected.")
 
     # =========================
-    # ---- Contribution Impact (Fixed) ----
+    # ---- Contribution Impact ----
     # =========================
     st.subheader("🚀 Contribution Impact Summary")
 
-    # Baseline keeps pension but removes elective contributions
     baseline_pension_contribution = pension_contribution
     baseline_agi = gross_salary - baseline_pension_contribution
     baseline_taxable_income = max(baseline_agi - standard_deduction, 0)
@@ -234,16 +347,15 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
     baseline_state_tax = calculate_tax(baseline_taxable_income, VIRGINIA_BRACKETS_2025)
     baseline_total_tax = baseline_federal_tax + baseline_state_tax
     baseline_after_tax_income = gross_salary - baseline_pension_contribution - baseline_total_tax
-    baseline_post_tax_savings = 0
     baseline_disposable_income = baseline_after_tax_income
 
-    # KPIs
     col1, col2, col3 = st.columns(3)
     col1.metric("Δ Taxes Paid", money(baseline_total_tax - total_tax))
-    col2.metric("Annual Savings (with contributions)", money(total_savings))
+    col2.metric("Annual Savings (total, incl. employer)", money(total_savings))
     col3.metric("Δ Disposable Income", money((after_tax_income - post_tax_savings) - baseline_disposable_income))
 
-    # Stacked allocation of gross salary (how each $ is split)
+    # Only employee-funded savings in the allocation (cash-flow)
+    savings_for_cashflow = total_savings - employer_sum
     allocation_rows = [
         {"Scenario": "No Contributions",   "Category": "Pension",        "Amount": baseline_pension_contribution},
         {"Scenario": "No Contributions",   "Category": "Federal Taxes",  "Amount": baseline_federal_tax},
@@ -254,12 +366,11 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
         {"Scenario": "With Contributions", "Category": "Pension",        "Amount": pension_contribution},
         {"Scenario": "With Contributions", "Category": "Federal Taxes",  "Amount": federal_tax},
         {"Scenario": "With Contributions", "Category": "State Taxes",    "Amount": state_tax},
-        {"Scenario": "With Contributions", "Category": "Savings",        "Amount": total_savings},
-        {"Scenario": "With Contributions", "Category": "Disposable",     "Amount": disposable_income},
+        {"Scenario": "With Contributions", "Category": "Savings",        "Amount": savings_for_cashflow},
+        {"Scenario": "With Contributions", "Category": "Disposable",     "Amount": max(disposable_income, 0)},
     ]
     alloc_df = pd.DataFrame(allocation_rows)
-
-    st.caption("Share of gross salary by destination (pension, taxes, savings, disposable).")
+    st.caption("Share of gross salary by destination (pension, taxes, **employee-funded** savings, disposable). Employer contributions are excluded from this cash-flow view.")
     if ALT_AVAILABLE:
         chart = (
             alt.Chart(alloc_df)
@@ -281,7 +392,6 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
         st.warning("Altair not available. Showing allocation table instead.")
         st.dataframe(alloc_df.pivot_table(index="Category", columns="Scenario", values="Amount"))
 
-    # Optional: Waterfall from Gross -> Disposable (With Contributions)
     with st.expander("💧 Show Waterfall: Gross → Disposable (With Contributions)", expanded=False):
         steps = [
             ("Gross Salary", gross_salary),
@@ -289,25 +399,20 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
             ("− Federal Taxes", -federal_tax),
             ("− State Taxes", -state_tax),
             ("= After-Tax Income", after_tax_income),
-            ("− Post-Tax Savings", -post_tax_savings),
+            ("− Post-Tax Savings (employee-funded)", -post_tax_savings),
             ("= Disposable Income", disposable_income),
         ]
-
         wf_labels = [s[0] for s in steps]
         wf_values = [s[1] for s in steps]
-
         running = 0
         starts = []
         for v in wf_values:
             starts.append(running)
             running += v
-
         fig_wf, ax_wf = plt.subplots()
         for i, (label, value) in enumerate(steps):
-            color = 'tab:green' if value >= 0 else 'tab:red'
-            ax_wf.bar(i, value, bottom=starts[i], width=0.6, color=color)
+            ax_wf.bar(i, value, bottom=starts[i], width=0.6)
             ax_wf.text(i, starts[i] + value / 2, money(abs(value)), ha='center', va='center', fontsize=9)
-
         ax_wf.set_xticks(range(len(wf_labels)))
         ax_wf.set_xticklabels(wf_labels, rotation=20, ha='right')
         ax_wf.set_ylabel("Dollars ($)")
@@ -320,109 +425,149 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
     # =========================
     st.subheader("📊 Money Flow Pie (Net of Pension)")
     base_after_pension = gross_salary - pension_contribution
-    pie_labels = ["Federal Taxes", "State Taxes", "Savings", "Disposable Income"]
-    pie_values = [federal_tax, state_tax, total_savings, max(disposable_income, 0)]
-
-    if disposable_income < 0:
-        st.warning(
-            "Your post-tax savings exceed your after-tax income. Disposable income is negative; "
-            "the pie clamps it to $0 for display."
-        )
-
+    pie_labels = ["Federal Taxes", "State Taxes", "Employee-Funded Savings", "Disposable Income"]
+    pie_values = [federal_tax, state_tax, max(savings_for_cashflow, 0), max(disposable_income, 0)]
     fig1, ax1 = plt.subplots()
     if sum(v for v in pie_values) <= 0:
         ax1.text(0.5, 0.5, "No flow to display", ha='center', va='center')
     else:
         ax1.pie(pie_values, labels=pie_labels, autopct='%1.1f%%', startangle=90)
         ax1.axis('equal')
-    st.caption(f"Pie represents allocation of **{money(base_after_pension)}** (gross minus pension).")
+    st.caption(f"Pie represents allocation of **{money(base_after_pension)}** (gross minus pension). Employer contributions are not part of this pie.")
     st.pyplot(fig1)
 
     # =========================
-    # ---- FI Milestones ----
+    # ---- FI Milestones & Growth ----
     # =========================
     st.subheader("🌱 FI Milestones Projection (SWR-driven)")
 
-    invest_value = current_investments
-    annual_contrib = total_savings
+    # Build per-account portfolio model
+    portfolio = {}
+    if other_start > 0:
+        portfolio["Other Investments"] = {"balance": other_start, "return": other_return}
+    for acct, bal in account_start_balances.items():
+        if bal > 0:
+            r = account_returns.get(acct, expected_return)
+            portfolio[acct] = {"balance": bal, "return": r}
+    for acct, contrib in contributions.items():
+        if acct not in portfolio:
+            r = account_returns.get(acct, expected_return)
+            portfolio[acct] = {"balance": 0.0, "return": r}
+    annual_contribs = {acct: contributions.get(acct, 0.0) for acct in portfolio.keys()}
+
     years = []
     balances = []
+    milestone_years = {}   # name -> int years to achieve (0 already), or None
+    snapshot_at_ret = None
+    full_fi_first_year = None
+    snapshot_full_fi = None
 
-    # ---- SWR-driven FI targets ----
-    # Full FI target is expenses divided by SWR (e.g., 25x for 4%).
     if swr <= 0:
         st.error("Safe Withdrawal Rate must be > 0%.")
         st.stop()
 
-    full_fi_target = annual_expenses / swr
-    lean_fi_target = (annual_expenses * 0.75) / swr
-    chubby_fi_target = (annual_expenses * 1.20) / swr         # NEW: between Lean and Fat
-    fat_fi_target = (annual_expenses * 1.50) / swr
+    full_fi_target    = annual_expenses / swr
+    lean_fi_target    = (annual_expenses * 0.75) / swr
+    chubby_fi_target  = (annual_expenses * 1.20) / swr
+    fat_fi_target     = (annual_expenses * 1.50) / swr
     barista_fi_target = (annual_expenses * 0.50) / swr
-    flamingo_fi_target = 0.50 * full_fi_target                 # NEW: hit 50% of Full FI
+    flamingo_fi_target = 0.50 * full_fi_target
 
-    # Coast FI: enough today to hit Full FI by retirement age with zero new contributions
-    # years_to_retirement is treated as "retirement_age" years from now in this simplified model.
-    years_to_retirement = retirement_age if retirement_age > 0 else 0
+    years_to_retirement = int(max(1, round(retirement_age)))
     coast_fi_target = full_fi_target / ((1 + expected_return) ** years_to_retirement) if expected_return > -1 else math.inf
 
-    milestones = {
-        "Coast FI": False,
-        "Flamingo FI (50% of FI #)": False,       # NEW
-        "Barista FI (50% Expenses)": False,
-        "Lean FI (75% Expenses)": False,
-        "Chubby FI (~120% Expenses)": False,      # NEW
-        "Full FI (100% Expenses)": False,
-        "Fat FI (150% Expenses)": False,
-    }
+    milestone_defs = [
+        ("Coast FI", coast_fi_target),
+        ("Flamingo FI (50% of FI #)", flamingo_fi_target),
+        ("Barista FI (covers ~50% of expenses)", barista_fi_target),
+        ("Lean FI (75% Expenses)", lean_fi_target),
+        ("Chubby FI (~120% Expenses)", chubby_fi_target),
+        ("Full FI (100% Expenses)", full_fi_target),
+        ("Fat FI (150% Expenses)", fat_fi_target),
+    ]
 
+    starting_total = sum(b["balance"] for b in portfolio.values())
+    for name, target in milestone_defs:
+        milestone_years[name] = 0 if starting_total >= target else None
+
+    # Sim loop (up to 50 years)
     for year in range(1, 51):
-        invest_value = invest_value * (1 + expected_return) + annual_contrib
-        balances.append(invest_value)
+        for acct in portfolio:
+            r = portfolio[acct]["return"]
+            portfolio[acct]["balance"] = portfolio[acct]["balance"] * (1 + r) + annual_contribs.get(acct, 0.0)
+
+        total_balance = sum(b["balance"] for b in portfolio.values())
         years.append(year)
+        balances.append(total_balance)
 
-        if not milestones["Coast FI"] and invest_value >= coast_fi_target:
-            milestones["Coast FI"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+        # First Full FI crossing snapshot
+        if full_fi_first_year is None and total_balance >= full_fi_target:
+            full_fi_first_year = year
+            snapshot_full_fi = {acct: portfolio[acct]["balance"] for acct in portfolio}
 
-        if not milestones["Flamingo FI (50% of FI #)"] and invest_value >= flamingo_fi_target:
-            milestones["Flamingo FI (50% of FI #)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+        # Milestone years
+        for name, target in milestone_defs:
+            if milestone_years[name] is None and total_balance >= target:
+                milestone_years[name] = year
 
-        if not milestones["Barista FI (50% Expenses)"] and invest_value >= barista_fi_target:
-            milestones["Barista FI (50% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+        if year == years_to_retirement:
+            snapshot_at_ret = {acct: portfolio[acct]["balance"] for acct in portfolio}
 
-        if not milestones["Lean FI (75% Expenses)"] and invest_value >= lean_fi_target:
-            milestones["Lean FI (75% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+    if snapshot_at_ret is None:
+        snapshot_at_ret = {acct: portfolio[acct]["balance"] for acct in portfolio}
 
-        if not milestones["Chubby FI (~120% Expenses)"] and invest_value >= chubby_fi_target:
-            milestones["Chubby FI (~120% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+    # ----- Milestones table ordered by time -----
+    ordered = []
+    for name, _ in milestone_defs:
+        yr = milestone_years[name]
+        if yr is None:
+            display = ">50 years"; sort_key = 10**9
+        elif yr == 0:
+            display = "0 years (✅ already)"; sort_key = 0
+        else:
+            display = f"{yr} years"; sort_key = yr
+        ordered.append((name, display, sort_key))
+    ordered.sort(key=lambda x: x[2])
 
-        if not milestones["Full FI (100% Expenses)"] and invest_value >= full_fi_target:
-            milestones["Full FI (100% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+    st.subheader(f"🏁 FI Milestones (SWR = {swr_percent:.1f}%) — ordered by time to achieve")
+    st.table(pd.DataFrame([(n, d) for n, d, _ in ordered], columns=["Milestone", "Time to Achieve"]))
 
-        if not milestones["Fat FI (150% Expenses)"] and invest_value >= fat_fi_target:
-            milestones["Fat FI (150% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
-
-    milestone_table = pd.DataFrame(list(milestones.items()), columns=["Milestone", "Time to Achieve"])
-    st.table(milestone_table)
-
-    # ---- Milestone Explanations ----
-    st.subheader("📖 What the Milestones Mean (SWR = " + f"{swr_percent:.1f}%" + ")")
+    # ---- Milestone explanations (typical progression) ----
+    st.subheader("📖 What the Milestones Mean (typical progression)")
     st.markdown(f"""
-    - **Coast FI**: Invested today grows to your **Full FI** target by age **{retirement_age}** with no additional contributions.
-    - **Flamingo FI**: Reach **~50%** of your Full FI number, then let compounding do the rest while you downshift to part-time/semi-retirement.
-    - **Barista FI**: Portfolio covers **50%** of expenses; part-time work covers the rest.
-    - **Lean FI**: Portfolio can support **75%** of expenses at your chosen SWR.
-    - **Chubby FI**: Comfortable middle-ground—**~120%** of expenses (between Lean and Fat).
-    - **Full FI**: Portfolio supports **100%** of expenses at your chosen SWR.
-    - **Fat FI**: Portfolio supports **150%** of expenses (extra cushion/luxury).
-    """)
+- **Coast FI** *(meta milestone)*: Invested today grows to your **Full FI** target by ~**{years_to_retirement} years** from now with **no additional contributions**.
+- **Barista FI**: Portfolio supports **~50% of your annual expenses** at your chosen SWR; the remaining ~50% comes from part-time work or a lighter-pay role.
+- **Flamingo FI**: Build **~50%** of your Full FI number, then **downshift**—let compounding finish the job while you semi-retire with little/no new savings.
+- **Lean FI**: Portfolio can support **75%** of expenses at your chosen SWR.
+- **Full FI**: Portfolio supports **100%** of expenses at your chosen SWR.
+- **Chubby FI**: Comfortable middle-ground—**~120%** of expenses (extra cushion beyond Full FI).
+- **Fat FI**: Portfolio supports **150%** of expenses (even more cushion/luxury).
+""")
 
     # ---- Investment Growth Over Time ----
     st.subheader("📈 Investment Growth Over Time")
     fig2, ax2 = plt.subplots()
     ax2.plot(years, balances, label="Projected Portfolio Value")
 
-    # Show FI targets as reference lines (Full + Chubby + Lean)
+    # Annotate the first Full FI crossing, if any
+    if full_fi_first_year is not None:
+        x = full_fi_first_year
+        y = balances[x - 1]  # balances is 0-indexed, years start at 1
+        ax2.axvline(x, linestyle=':', alpha=0.6)
+        ax2.scatter([x], [y], zorder=5)
+        right_side = x < (len(years) * 0.7)
+        x_text = x + 1 if right_side else x - 1
+        y_text = y * (1.06 if right_side else 1.04)
+        ax2.annotate(
+            f"Full FI in {x} yrs\n{money(y)}",
+            xy=(x, y),
+            xytext=(x_text, y_text),
+            arrowprops=dict(arrowstyle="->", lw=1),
+            fontsize=9,
+            ha="left" if right_side else "right"
+        )
+
+    # FI reference lines
     ax2.axhline(y=full_fi_target, linestyle='--', label=f'Full FI ({money(full_fi_target)})')
     ax2.axhline(y=chubby_fi_target, linestyle=':', label=f'Chubby FI ({money(chubby_fi_target)})')
     ax2.axhline(y=lean_fi_target, linestyle='-.', label=f'Lean FI ({money(lean_fi_target)})')
@@ -434,3 +579,71 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
     ax2.set_ylabel("Portfolio Value ($)")
     ax2.legend()
     st.pyplot(fig2)
+
+    # -----------------------------
+    # Snapshot selector (FI vs Ret)
+    # -----------------------------
+    default_label = f"Retirement horizon (~{years_to_retirement} years)"
+    fi_label = "First year you reach Full FI"
+    snapshot_choice = st.radio(
+        "Balance snapshot at",
+        [default_label, fi_label],
+        index=0,
+        help="View balances at your retirement horizon or the first year your portfolio crosses the Full FI target."
+    )
+    if snapshot_choice == fi_label:
+        if snapshot_full_fi is not None:
+            snapshot_to_use = snapshot_full_fi
+            snapshot_year_text = f"(year {full_fi_first_year})"
+        else:
+            st.info("You do not reach Full FI within the 50-year simulation. Showing retirement-horizon snapshot instead.")
+            snapshot_to_use = snapshot_at_ret
+            snapshot_year_text = f"(~{years_to_retirement} years)"
+    else:
+        snapshot_to_use = snapshot_at_ret
+        snapshot_year_text = f"(~{years_to_retirement} years)"
+
+    # =========================
+    # ---- Tax Bucket Summary at Selected Snapshot ----
+    # =========================
+    st.subheader(f"🏦 Projected Balances by Tax Bucket {snapshot_year_text}")
+
+    def tax_bucket(acct_name: str) -> str:
+        roth = {"Roth IRA", "403(b) Roth", "457(b) Roth"}
+        traditional = {
+            "Traditional IRA", "403(b) Traditional", "457(b) Traditional",
+            "401(a) Employee", "401(a) Employer", "Solo 401(k) Employee",
+            "Solo 401(k) Employer", "SEP IRA", "SIMPLE IRA"
+        }
+        hsa = {"HSA"}
+        education = {"529 Plan", "ESA"}
+        taxable = {"Brokerage", "Crypto", "Other Investments"}
+        if acct_name in roth:
+            return "Roth (tax-free withdrawals, rules apply)"
+        if acct_name in traditional:
+            return "Traditional / Pre-tax (taxable withdrawals)"
+        if acct_name in hsa:
+            return "HSA (triple-advantaged, med. rules)"
+        if acct_name in education:
+            return "Education (529/ESA)"
+        if acct_name in taxable:
+            return "Taxable / Non-advantaged"
+        return "Other / Unclassified"
+
+    bucket_sums = {}
+    for acct, bal in snapshot_to_use.items():
+        b = tax_bucket(acct)
+        bucket_sums[b] = bucket_sums.get(b, 0.0) + bal
+    bucket_rows = [{"Bucket": b, "Projected Balance": money(v)} for b, v in bucket_sums.items()]
+    bucket_df = pd.DataFrame(bucket_rows).sort_values("Bucket")
+    st.dataframe(bucket_df, use_container_width=True)
+
+    st.subheader(f"📋 Per-Account Balances {snapshot_year_text}")
+    acct_rows = []
+    for acct, bal in sorted(snapshot_to_use.items()):
+        acct_rows.append({
+            "Account": acct,
+            "Bucket": tax_bucket(acct),
+            "Projected Balance": money(bal)
+        })
+    st.dataframe(pd.DataFrame(acct_rows), use_container_width=True)
