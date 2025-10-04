@@ -88,7 +88,8 @@ with st.expander("Assumptions", expanded=False):
         "- Uses the **standard deduction** based on filing status.\n"
         "- Virginia 529 deduction capped at **$4,000**.\n"
         "- Pension contributions reduce AGI (treated like employer/mandatory pre-tax).\n"
-        "- This is a simplified planner; it ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, etc."
+        "- **Safe Withdrawal Rate (SWR)** drives FI targets (default 4%).\n"
+        "- Simplified model (ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, etc.)."
     )
 
 # ---- Sidebar Inputs ----
@@ -99,6 +100,11 @@ st.sidebar.header("Income & Expenses")
 gross_salary = st.sidebar.number_input("Gross Salary ($)", value=100000, step=1000)
 pension_percent = st.sidebar.slider("Pension Contribution (% of Salary)", 0, 20, 5) / 100
 annual_expenses = st.sidebar.number_input("Annual Expenses ($)", value=40000, step=1000)
+
+# 🔥 NEW: Safe Withdrawal Rate control
+swr_percent = st.sidebar.number_input("Safe Withdrawal Rate (%)", min_value=2.0, max_value=7.0, value=4.0, step=0.1)
+swr = swr_percent / 100.0  # decimal; e.g., 4% => 0.04
+
 current_investments = st.sidebar.number_input("Current Total Investment Value ($)", value=50000, step=1000)
 expected_return = st.sidebar.number_input("Expected Annual Investment Growth Rate (%)", value=5.0, step=0.1) / 100
 retirement_age = st.sidebar.number_input("Normal Retirement Age", value=58.5, step=0.5)
@@ -324,7 +330,6 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
         )
 
     fig1, ax1 = plt.subplots()
-    # Avoid division by zero in case everything is zero
     if sum(v for v in pie_values) <= 0:
         ax1.text(0.5, 0.5, "No flow to display", ha='center', va='center')
     else:
@@ -336,23 +341,37 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
     # =========================
     # ---- FI Milestones ----
     # =========================
-    st.subheader("🌱 FI Milestones Projection")
+    st.subheader("🌱 FI Milestones Projection (SWR-driven)")
 
     invest_value = current_investments
     annual_contrib = total_savings
     years = []
     balances = []
 
-    # For milestones, we consider time to retirement as entered
-    years_to_retirement = retirement_age  # relative starting age = 0
-    full_fi_target = annual_expenses * 25
+    # ---- SWR-driven FI targets ----
+    # Full FI target is expenses divided by SWR (e.g., 25x for 4%).
+    if swr <= 0:
+        st.error("Safe Withdrawal Rate must be > 0%.")
+        st.stop()
+
+    full_fi_target = annual_expenses / swr
+    lean_fi_target = (annual_expenses * 0.75) / swr
+    chubby_fi_target = (annual_expenses * 1.20) / swr         # NEW: between Lean and Fat
+    fat_fi_target = (annual_expenses * 1.50) / swr
+    barista_fi_target = (annual_expenses * 0.50) / swr
+    flamingo_fi_target = 0.50 * full_fi_target                 # NEW: hit 50% of Full FI
+
+    # Coast FI: enough today to hit Full FI by retirement age with zero new contributions
+    # years_to_retirement is treated as "retirement_age" years from now in this simplified model.
+    years_to_retirement = retirement_age if retirement_age > 0 else 0
     coast_fi_target = full_fi_target / ((1 + expected_return) ** years_to_retirement) if expected_return > -1 else math.inf
-    barista_fi_target = (annual_expenses * 0.5) * 25
 
     milestones = {
         "Coast FI": False,
-        "Barista FI": False,
+        "Flamingo FI (50% of FI #)": False,       # NEW
+        "Barista FI (50% Expenses)": False,
         "Lean FI (75% Expenses)": False,
+        "Chubby FI (~120% Expenses)": False,      # NEW
         "Full FI (100% Expenses)": False,
         "Fat FI (150% Expenses)": False,
     }
@@ -365,36 +384,48 @@ if st.sidebar.button("🚀 Run FIRE Simulation"):
         if not milestones["Coast FI"] and invest_value >= coast_fi_target:
             milestones["Coast FI"] = "✅ Already Achieved" if year == 1 else f"{year} years"
 
-        if not milestones["Barista FI"] and invest_value >= barista_fi_target:
-            milestones["Barista FI"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+        if not milestones["Flamingo FI (50% of FI #)"] and invest_value >= flamingo_fi_target:
+            milestones["Flamingo FI (50% of FI #)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
 
-        if not milestones["Lean FI (75% Expenses)"] and invest_value >= (annual_expenses * 0.75) * 25:
+        if not milestones["Barista FI (50% Expenses)"] and invest_value >= barista_fi_target:
+            milestones["Barista FI (50% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+
+        if not milestones["Lean FI (75% Expenses)"] and invest_value >= lean_fi_target:
             milestones["Lean FI (75% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
+
+        if not milestones["Chubby FI (~120% Expenses)"] and invest_value >= chubby_fi_target:
+            milestones["Chubby FI (~120% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
 
         if not milestones["Full FI (100% Expenses)"] and invest_value >= full_fi_target:
             milestones["Full FI (100% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
 
-        if not milestones["Fat FI (150% Expenses)"] and invest_value >= (annual_expenses * 1.5) * 25:
+        if not milestones["Fat FI (150% Expenses)"] and invest_value >= fat_fi_target:
             milestones["Fat FI (150% Expenses)"] = "✅ Already Achieved" if year == 1 else f"{year} years"
 
     milestone_table = pd.DataFrame(list(milestones.items()), columns=["Milestone", "Time to Achieve"])
     st.table(milestone_table)
 
     # ---- Milestone Explanations ----
-    st.subheader("📖 What the Milestones Mean")
+    st.subheader("📖 What the Milestones Mean (SWR = " + f"{swr_percent:.1f}%" + ")")
     st.markdown(f"""
-    - **Coast FI**: Investments grow enough by retirement age ({retirement_age} years old) without new savings.
-    - **Barista FI**: Investments cover 50% of expenses; part-time work covers the rest.
-    - **Lean FI**: Investments = 75% of full expenses.
-    - **Full FI**: Investments = 100% of full desired lifestyle expenses.
-    - **Fat FI**: Investments = 150% of expenses (extra cushion/luxury).
+    - **Coast FI**: Invested today grows to your **Full FI** target by age **{retirement_age}** with no additional contributions.
+    - **Flamingo FI**: Reach **~50%** of your Full FI number, then let compounding do the rest while you downshift to part-time/semi-retirement.
+    - **Barista FI**: Portfolio covers **50%** of expenses; part-time work covers the rest.
+    - **Lean FI**: Portfolio can support **75%** of expenses at your chosen SWR.
+    - **Chubby FI**: Comfortable middle-ground—**~120%** of expenses (between Lean and Fat).
+    - **Full FI**: Portfolio supports **100%** of expenses at your chosen SWR.
+    - **Fat FI**: Portfolio supports **150%** of expenses (extra cushion/luxury).
     """)
 
     # ---- Investment Growth Over Time ----
     st.subheader("📈 Investment Growth Over Time")
     fig2, ax2 = plt.subplots()
     ax2.plot(years, balances, label="Projected Portfolio Value")
-    ax2.axhline(y=annual_expenses * 25, linestyle='--', label='Full FI Target (25x Expenses)')
+
+    # Show FI targets as reference lines (Full + Chubby + Lean)
+    ax2.axhline(y=full_fi_target, linestyle='--', label=f'Full FI ({money(full_fi_target)})')
+    ax2.axhline(y=chubby_fi_target, linestyle=':', label=f'Chubby FI ({money(chubby_fi_target)})')
+    ax2.axhline(y=lean_fi_target, linestyle='-.', label=f'Lean FI ({money(lean_fi_target)})')
 
     ax2.yaxis.set_major_formatter(
         ticker.FuncFormatter(lambda x, _: f'${int(x/1000)}k' if x < 1_000_000 else f'${x/1_000_000:.1f}M')
