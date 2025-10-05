@@ -84,7 +84,6 @@ def format_eta_decimal(eta_years):
     return f"{eta_years:.1f} years"
 
 def marginal_rate_for(brackets, taxable):
-    """Return marginal rate given start-of-bracket list."""
     if taxable <= 0: return 0.0
     n = len(brackets)
     for i, (start, rate) in enumerate(brackets):
@@ -94,7 +93,6 @@ def marginal_rate_for(brackets, taxable):
     return brackets[-1][1]
 
 def bracket_slices(brackets, taxable):
-    """List of dicts with 'from','to','rate','span','tax' for stacking viz."""
     rows = []
     n = len(brackets)
     for i, (start, rate) in enumerate(brackets):
@@ -107,7 +105,6 @@ def bracket_slices(brackets, taxable):
     return rows
 
 def recompute_tax_with_override(base_gross, pension_contrib, filing, contributions, override_key=None, override_value=None):
-    """Recompute taxes while optionally overriding ONE contribution (e.g., set to 0)."""
     contribs = dict(contributions)
     if override_key is not None:
         contribs[override_key] = override_value
@@ -509,52 +506,85 @@ else:
         for msg in sim["warn_msgs"]:
             st.warning(msg)
 
-        # --- Contribution Impact: side-by-side ---
-        st.subheader("📊 Contribution Impact (side-by-side)")
+        # --- Contribution Impact: cash-flow stacked bars (side-by-side) ---
+        st.subheader("📊 Contribution Impact (cash-flow breakdown)")
+
         std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status == "Single" else STANDARD_DEDUCTION_2025_MARRIED
         baseline_pension = sim["pension_contribution"]
         base_agi = gross_salary - baseline_pension
         base_taxable_income = max(base_agi - std_ded, 0)
         base_fed = calculate_tax(base_taxable_income, FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED)
         base_state = calculate_tax(base_taxable_income, VIRGINIA_BRACKETS_2025)
-        base_total_tax = base_fed + base_state
-        base_after_tax_income = gross_salary - baseline_pension - base_total_tax
-        base_savings = 0.0
-        base_disposable = base_after_tax_income
+        base_tax_total = base_fed + base_state
+        base_pre_tax_stack = baseline_pension
+        base_post_tax_savings = 0.0
+        base_disposable = max(0.0, gross_salary - base_pre_tax_stack - base_tax_total - base_post_tax_savings)
 
-        with_total_tax = sim["total_tax"]
-        with_after_tax_income = sim["after_tax_income"]
-        with_savings = sim["total_savings"]
-        with_disposable = sim["after_tax_income"] - (sim["post_tax_savings"])
+        agi_reducing_accounts = [
+            "403(b) Traditional","457(b) Traditional","401(a) Employee","Solo 401(k) Employee",
+            "SEP IRA","SIMPLE IRA","Traditional IRA","HSA","FSA"
+        ]
+        with_pre_tax_elective = sum(contributions.get(a, 0.0) for a in agi_reducing_accounts)
+        with_pre_tax_stack = baseline_pension + with_pre_tax_elective
+        with_fed = sim["federal_tax"]
+        with_state = sim["state_tax"]
+        with_tax_total = with_fed + with_state
+        with_post_tax_savings = sim["post_tax_savings"]
+        with_disposable = max(0.0, gross_salary - with_pre_tax_stack - with_tax_total - with_post_tax_savings)
 
-        impact_df = pd.DataFrame([
-            {"Metric":"Taxes Paid", "Scenario":"No contributions", "Amount": base_total_tax},
-            {"Metric":"Taxes Paid", "Scenario":"With contributions", "Amount": with_total_tax},
-            {"Metric":"After-Tax Income", "Scenario":"No contributions", "Amount": base_after_tax_income},
-            {"Metric":"After-Tax Income", "Scenario":"With contributions", "Amount": with_after_tax_income},
-            {"Metric":"Savings", "Scenario":"No contributions", "Amount": base_savings},
-            {"Metric":"Savings", "Scenario":"With contributions", "Amount": with_savings},
-            {"Metric":"Disposable", "Scenario":"No contributions", "Amount": base_disposable},
-            {"Metric":"Disposable", "Scenario":"With contributions", "Amount": with_disposable},
-        ])
+        order = [
+            "Pre-tax (pension + elective)",
+            "Federal tax",
+            "State tax",
+            "Post-tax savings",
+            "Disposable income"
+        ]
+        bars = [
+            {"Scenario": "No contributions", "Component": order[0], "Amount": base_pre_tax_stack},
+            {"Scenario": "No contributions", "Component": order[1], "Amount": base_fed},
+            {"Scenario": "No contributions", "Component": order[2], "Amount": base_state},
+            {"Scenario": "No contributions", "Component": order[3], "Amount": base_post_tax_savings},
+            {"Scenario": "No contributions", "Component": order[4], "Amount": base_disposable},
+            {"Scenario": "With contributions", "Component": order[0], "Amount": with_pre_tax_stack},
+            {"Scenario": "With contributions", "Component": order[1], "Amount": with_fed},
+            {"Scenario": "With contributions", "Component": order[2], "Amount": with_state},
+            {"Scenario": "With contributions", "Component": order[3], "Amount": with_post_tax_savings},
+            {"Scenario": "With contributions", "Component": order[4], "Amount": with_disposable},
+        ]
+        impact_df = pd.DataFrame(bars)
 
         if ALT_AVAILABLE:
             chart = (
                 alt.Chart(impact_df)
                 .mark_bar()
                 .encode(
-                    x=alt.X("Metric:N", title=None),
-                    y=alt.Y("Amount:Q", title="$", axis=alt.Axis(format="~s")),
-                    color=alt.Color("Scenario:N", legend=alt.Legend(orient="bottom")),
-                    column=alt.Column("Metric:N", header=alt.Header(title=None, labelAngle=0)),
-                    tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Metric:N"),
-                             alt.Tooltip("Amount:Q", format="$,.0f")],
+                    x=alt.X("Scenario:N", title=None),
+                    y=alt.Y("Amount:Q", title="Annual $, stacks to gross salary", stack="zero", axis=alt.Axis(format="~s")),
+                    color=alt.Color("Component:N", sort=order, legend=alt.Legend(orient="bottom")),
+                    order=alt.Order("Component:N", sort="ascending"),
+                    tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Component:N"), alt.Tooltip("Amount:Q", format="$,.0f")],
                 )
-                .properties(height=220)
+                .properties(height=260)
             )
             st.altair_chart(chart, use_container_width=True)
         else:
-            st.dataframe(impact_df.pivot(index="Metric", columns="Scenario", values="Amount").applymap(lambda v: f"${v:,.0f}"))
+            import numpy as np
+            scenarios = ["No contributions", "With contributions"]
+            fig, ax = plt.subplots(figsize=(6, 3.2))
+            x = np.arange(len(scenarios))
+            bottoms = np.zeros(len(scenarios))
+            for comp in order:
+                y = []
+                for sc in scenarios:
+                    amt = impact_df[(impact_df["Scenario"]==sc) & (impact_df["Component"]==comp)]["Amount"].sum()
+                    y.append(amt)
+                ax.bar(x, y, bottom=bottoms, label=comp)
+                bottoms += np.array(y)
+            ax.set_xticks(x); ax.set_xticklabels(scenarios)
+            ax.set_ylabel("Annual $")
+            ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+            ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2)
+            st.pyplot(fig, clear_figure=True)
 
         # --- Marginal rates & bracket viz (collapsible) ---
         with st.expander("Bracket visualizer & marginal rates", expanded=False):
@@ -639,7 +669,6 @@ else:
         with st.expander("Which contributions saved you the most tax?", expanded=False):
             impact_rows = []
             pension = sim["pension_contribution"]
-
             pre_tax_like = [
                 "403(b) Traditional","457(b) Traditional",
                 "401(a) Employee","Solo 401(k) Employee",
@@ -658,7 +687,6 @@ else:
                 )
                 delta_tax = tot2 - sim["total_tax"]
                 impact_rows.append({"Account": acct, "Your contribution": money(amt), "Estimated tax saved": money(delta_tax)})
-
             if impact_rows:
                 imp_df = pd.DataFrame(impact_rows)
                 imp_df["_sort"] = imp_df["Estimated tax saved"].replace({r'[$,]':''}, regex=True).astype(float)
@@ -771,8 +799,8 @@ else:
                 if mdata:
                     mdf = pd.DataFrame(mdata).sort_values("Year")
                     picked = []
-                    gap_x = 1.2   # years
-                    gap_y_ratio = 0.10  # 10% vertical gap
+                    gap_x = 1.2
+                    gap_y_ratio = 0.10
                     for row in mdf.itertuples(index=False):
                         if picked:
                             prev = picked[-1]
@@ -901,7 +929,6 @@ else:
             key="snapshot_choice",
         )
 
-        # Nominal snapshot & guide horizon
         if snapshot_choice == five_label and sim.get("snapshot_5yr"):
             snapshot_to_use = sim["snapshot_5yr"]; snapshot_year_text = "(~5 years)"; guide_year = 5
         elif snapshot_choice == ten_label and sim.get("snapshot_10yr"):
@@ -913,7 +940,6 @@ else:
                 st.info("You do not reach Full FI within the capped horizon. Showing retirement-horizon snapshot instead.")
             snapshot_to_use = sim["snapshot_at_ret"]; snapshot_year_text = f"(~{sim['years_until_ret']} years)"; guide_year = sim["years_until_ret"]
 
-        # Real snapshot for same horizon
         if snapshot_choice == five_label and sim.get("real_snapshot_5yr"):
             real_snapshot = sim["real_snapshot_5yr"]
         elif snapshot_choice == ten_label and sim.get("real_snapshot_10yr"):
@@ -985,18 +1011,22 @@ else:
         # ---- NEW: Income you could draw from the portfolio ----
         st.subheader("💸 Income You Could Draw")
         st.caption("Pick withdrawal rates to preview sustainable income from this snapshot.")
+
+        # robust defaults so widget never crashes
+        wrate_options = [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+        _default_wr = {round(float(sim['swr_percent']), 1), 3.0, 4.0, 5.0}
+        default_wrates = [w for w in sorted(_default_wr) if w in wrate_options] or [4.0]
         wrates = st.multiselect(
             "Withdrawal rates",
-            options=[2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0],
-            default=[swr_percent, 3.0, 4.0, 5.0],
+            options=wrate_options,
+            default=default_wrates,
             help="All results shown for both Nominal and Real (today’s $)."
         )
-        wrates = sorted(set(wrates))
+
         if wrates:
             income_rows = []
-            # expense baseline
+            # expense baseline for coverage %
             if snapshot_choice in (five_label, ten_label) and sim["expense_inflation_on"]:
-                # If user is thinking nominal at a horizon and inflation-on, inflate expense to that horizon for % coverage (nominal)
                 horizon = 5 if snapshot_choice == five_label else 10
                 exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], horizon)
             elif snapshot_choice == fi_label and sim.get("full_fi_first_year"):
@@ -1005,10 +1035,9 @@ else:
                 exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], sim["years_until_ret"])
             else:
                 exp_nominal = sim["annual_expenses"]
-
             exp_real = sim["annual_expenses"]  # real baseline
 
-            for r in wrates:
+            for r in sorted(set(wrates)):
                 r_dec = r / 100.0
                 inc_nom = total_nominal * r_dec
                 inc_real = total_real * r_dec
@@ -1022,5 +1051,3 @@ else:
                     "Covers Expenses (Real)": f"{coverage_real*100:.0f}%"
                 })
             st.table(pd.DataFrame(income_rows))
-
-        st.caption("Nominal uses the raw dollar snapshot; Real discounts to today’s dollars using your CPI input.")
