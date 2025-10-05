@@ -78,7 +78,6 @@ def inflate_expense(base_expense: float, cpi: float, years: int) -> float:
     return base_expense * ((1.0 + cpi) ** max(0, years))
 
 def format_eta_decimal(eta_years):
-    """Always show a decimal number of years (one decimal)."""
     if eta_years is None:
         return "> capped horizon"
     return f"{eta_years:.1f} years"
@@ -97,9 +96,8 @@ def bracket_slices(brackets, taxable):
     n = len(brackets)
     for i, (start, rate) in enumerate(brackets):
         end = brackets[i+1][0] if i+1 < n else float('inf')
-        if taxable <= start:
-            break
-        span = min(taxable, end) - start
+        if taxable <= start: break
+        span = min(taxable_income, end) - start if (taxable_income := taxable) else 0
         tax  = max(0.0, span * rate)
         rows.append({"from": start, "to": min(taxable, end), "rate": rate, "span": span, "tax": tax})
     return rows
@@ -556,21 +554,32 @@ else:
         if ALT_AVAILABLE:
             chart = (
                 alt.Chart(impact_df)
-                .mark_bar()
+                .mark_bar(size=100)  # wider bars
                 .encode(
-                    x=alt.X("Scenario:N", title=None),
-                    y=alt.Y("Amount:Q", title="Annual $, stacks to gross salary", stack="zero", axis=alt.Axis(format="~s")),
+                    x=alt.X(
+                        "Scenario:N",
+                        title=None,
+                        axis=alt.Axis(labelAngle=0),
+                        scale=alt.Scale(paddingInner=0.35, paddingOuter=0.25),
+                    ),
+                    y=alt.Y(
+                        "Amount:Q",
+                        title="Annual $, stacks to gross salary",
+                        stack="zero",
+                        axis=alt.Axis(format="~s"),
+                    ),
                     color=alt.Color("Component:N", sort=order, legend=alt.Legend(orient="bottom")),
                     order=alt.Order("Component:N", sort="ascending"),
                     tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Component:N"), alt.Tooltip("Amount:Q", format="$,.0f")],
                 )
-                .properties(height=260)
+                .properties(height=340)  # taller
+                .configure_axis(labelFontSize=12, titleFontSize=12)
             )
             st.altair_chart(chart, use_container_width=True)
         else:
             import numpy as np
             scenarios = ["No contributions", "With contributions"]
-            fig, ax = plt.subplots(figsize=(6, 3.2))
+            fig, ax = plt.subplots(figsize=(6, 3.6))
             x = np.arange(len(scenarios))
             bottoms = np.zeros(len(scenarios))
             for comp in order:
@@ -780,7 +789,7 @@ else:
             # Main line
             layers.append(base)
 
-            # --- Milestone markers (clean, non-overlapping labels) ---
+            # --- Milestone markers: colorful dots + legend (optional labels) ---
             if show_markers and "milestone_eta" in sim:
                 names_ordered = ordered_names
                 mdata = []
@@ -798,32 +807,39 @@ else:
 
                 if mdata:
                     mdf = pd.DataFrame(mdata).sort_values("Year")
-                    picked = []
-                    gap_x = 1.2
-                    gap_y_ratio = 0.10
-                    for row in mdf.itertuples(index=False):
-                        if picked:
-                            prev = picked[-1]
-                            close_x = (row.Year - prev["Year"]) < gap_x
-                            close_y = abs(row.Value - prev["Value"]) < (prev["Value"] * gap_y_ratio)
-                            if close_x and close_y:
-                                continue
-                        picked.append({"Year": row.Year, "Value": row.Value, "Milestone": row.Milestone, "ETA": row.ETA})
-                    pick_df = pd.DataFrame(picked)
 
-                    points = alt.Chart(mdf).mark_point(size=55, filled=True, opacity=0.6).encode(
+                    show_milestone_labels = st.checkbox(
+                        "Show milestone labels",
+                        value=False,
+                        help="Dots always show tooltips; turn labels on if you want text."
+                    )
+
+                    points = alt.Chart(mdf).mark_point(size=80, filled=True).encode(
                         x="Year:Q",
                         y=alt.Y("Value:Q", scale=y_scale),
-                        tooltip=["Milestone:N", alt.Tooltip("ETA:Q", title="ETA (yrs)", format=".1f"),
-                                 alt.Tooltip("Value:Q", format="$.2s")]
+                        color=alt.Color("Milestone:N", legend=alt.Legend(title="Milestones", orient="bottom-left")),
+                        tooltip=[
+                            alt.Tooltip("Milestone:N"),
+                            alt.Tooltip("ETA:Q", title="ETA (yrs)", format=".1f"),
+                            alt.Tooltip("Value:Q", title="Value", format="$.2s")
+                        ],
                     )
-                    labels = alt.Chart(pick_df).mark_text(dy=-8, fontSize=10, stroke="black", strokeWidth=0.5).encode(
-                        x="Year:Q", y=alt.Y("Value:Q", scale=y_scale), text=alt.Text("Milestone:N")
-                    )
-                    eta_labels = alt.Chart(pick_df).mark_text(dy=8, fontSize=9).encode(
-                        x="Year:Q", y=alt.Y("Value:Q", scale=y_scale), text=alt.Text("ETA:Q", format=".1f")
-                    )
-                    layers += [points, labels, eta_labels]
+                    layers.append(points)
+
+                    if show_milestone_labels:
+                        labels = alt.Chart(mdf).mark_text(dx=6, dy=-6, fontSize=10, stroke="black", strokeWidth=0.5).encode(
+                            x="Year:Q",
+                            y=alt.Y("Value:Q", scale=y_scale),
+                            text=alt.Text("Milestone:N"),
+                            color=alt.Color("Milestone:N", legend=None),
+                        )
+                        eta_badges = alt.Chart(mdf).mark_text(dx=6, dy=8, fontSize=9).encode(
+                            x="Year:Q",
+                            y=alt.Y("Value:Q", scale=y_scale),
+                            text=alt.Text("ETA:Q", format=".1f"),
+                            color=alt.Color("Milestone:N", legend=None),
+                        )
+                        layers += [labels, eta_badges]
 
             # Guide lines
             if show_guides:
@@ -855,7 +871,7 @@ else:
 
             st.altair_chart(alt.layer(*layers), use_container_width=True)
 
-            # Stacked per-account area (separate chart)
+            # Stacked per-account area (optional)
             if show_stacked and "account_history" in sim and sim["account_history"]:
                 acct_df_rows = []
                 years_list = sim["years"]
@@ -891,7 +907,6 @@ else:
                 for h in [5, 10]:
                     if h <= sim["sim_years"]:
                         ax2.axvline(h, linestyle=':', alpha=0.35)
-                # milestone dots
                 if "milestone_eta" in sim:
                     for name, eta in sim["milestone_eta"].items():
                         if eta is None or eta <= 0 or eta > sim["sim_years"]: continue
@@ -912,42 +927,49 @@ else:
 
         # ---- Snapshots & Buckets ----
         st.subheader("📌 Snapshot & Buckets")
-        default_label = f"Retirement horizon (~{sim['years_until_ret']} years)"
-        fi_label = "First year you reach Full FI"
-        five_label = "5 years from today"
-        ten_label  = "10 years from today"
 
-        options = []
-        if sim.get("snapshot_5yr") and 5  <= sim["sim_years"]: options.append(five_label)
-        if sim.get("snapshot_10yr") and 10 <= sim["sim_years"]: options.append(ten_label)
-        options += [default_label, fi_label]
+        # Segmented control (with radio fallback) for phone-friendly selection
+        labels_map = {
+            "5y": "5 years from today",
+            "10y": "10 years from today",
+            "ret": f"Retirement horizon (~{sim['years_until_ret']} years)",
+            "fi":  "First year you reach Full FI",
+        }
+        options_keys = []
+        if sim.get("snapshot_5yr")  and 5  <= sim["sim_years"]: options_keys.append("5y")
+        if sim.get("snapshot_10yr") and 10 <= sim["sim_years"]: options_keys.append("10y")
+        options_keys += ["ret", "fi"]
 
-        snapshot_choice = st.radio(
-            "Balance snapshot at",
-            options,
-            index=options.index(default_label) if default_label in options else 0,
-            key="snapshot_choice",
-        )
+        try:
+            key_choice = st.segmented_control(
+                "Balance snapshot at",
+                options=options_keys,
+                format_func=lambda k: labels_map[k],
+                default="ret" if "ret" in options_keys else options_keys[0]
+            )
+        except Exception:
+            # Fallback to radio
+            label_list = [labels_map[k] for k in options_keys]
+            choice_label = st.radio("Balance snapshot at", label_list,
+                                    index=(label_list.index(labels_map["ret"]) if "ret" in options_keys else 0))
+            key_choice = {v:k for k,v in labels_map.items()}[choice_label]
 
-        if snapshot_choice == five_label and sim.get("snapshot_5yr"):
-            snapshot_to_use = sim["snapshot_5yr"]; snapshot_year_text = "(~5 years)"; guide_year = 5
-        elif snapshot_choice == ten_label and sim.get("snapshot_10yr"):
+        # Map the choice to snapshots
+        if key_choice == "5y":
+            snapshot_to_use = sim["snapshot_5yr"];  snapshot_year_text = "(~5 years)";  guide_year = 5
+            real_snapshot   = sim["real_snapshot_5yr"]
+        elif key_choice == "10y":
             snapshot_to_use = sim["snapshot_10yr"]; snapshot_year_text = "(~10 years)"; guide_year = 10
-        elif snapshot_choice == fi_label and sim.get("snapshot_full_fi") is not None:
-            snapshot_to_use = sim["snapshot_full_fi"]; snapshot_year_text = f"(year {st.session_state['sim']['full_fi_first_year']})"; guide_year = st.session_state["sim"]["full_fi_first_year"] or sim["years_until_ret"]
+            real_snapshot   = sim["real_snapshot_10yr"]
+        elif key_choice == "fi" and sim.get("snapshot_full_fi") is not None:
+            snapshot_to_use = sim["snapshot_full_fi"]; snapshot_year_text = f"(year {sim['full_fi_first_year']})"
+            guide_year = sim["full_fi_first_year"] or sim["years_until_ret"]
+            real_snapshot   = sim["real_snapshot_full_fi"]
         else:
-            if snapshot_choice == fi_label and sim.get("snapshot_full_fi") is None:
+            if key_choice == "fi" and sim.get("snapshot_full_fi") is None:
                 st.info("You do not reach Full FI within the capped horizon. Showing retirement-horizon snapshot instead.")
             snapshot_to_use = sim["snapshot_at_ret"]; snapshot_year_text = f"(~{sim['years_until_ret']} years)"; guide_year = sim["years_until_ret"]
-
-        if snapshot_choice == five_label and sim.get("real_snapshot_5yr"):
-            real_snapshot = sim["real_snapshot_5yr"]
-        elif snapshot_choice == ten_label and sim.get("real_snapshot_10yr"):
-            real_snapshot = sim["real_snapshot_10yr"]
-        elif snapshot_choice == fi_label and sim.get("real_snapshot_full_fi") is not None:
-            real_snapshot = sim["real_snapshot_full_fi"]
-        else:
-            real_snapshot = sim["real_snapshot_at_ret"]
+            real_snapshot   = sim["real_snapshot_at_ret"]
 
         def tax_bucket(acct_name: str) -> str:
             roth = {"Roth IRA", "403(b) Roth", "457(b) Roth"}
@@ -1008,11 +1030,10 @@ else:
             ).properties(height=220)
             st.altair_chart(bar, use_container_width=True)
 
-        # ---- NEW: Income you could draw from the portfolio ----
+        # ---- Income you could draw from the portfolio ----
         st.subheader("💸 Income You Could Draw")
         st.caption("Pick withdrawal rates to preview sustainable income from this snapshot.")
 
-        # robust defaults so widget never crashes
         wrate_options = [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
         _default_wr = {round(float(sim['swr_percent']), 1), 3.0, 4.0, 5.0}
         default_wrates = [w for w in sorted(_default_wr) if w in wrate_options] or [4.0]
@@ -1024,19 +1045,19 @@ else:
         )
 
         if wrates:
-            income_rows = []
             # expense baseline for coverage %
-            if snapshot_choice in (five_label, ten_label) and sim["expense_inflation_on"]:
-                horizon = 5 if snapshot_choice == five_label else 10
+            if key_choice in ("5y", "10y") and sim["expense_inflation_on"]:
+                horizon = 5 if key_choice == "5y" else 10
                 exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], horizon)
-            elif snapshot_choice == fi_label and sim.get("full_fi_first_year"):
+            elif key_choice == "fi" and sim.get("full_fi_first_year"):
                 exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], int(sim["full_fi_first_year"]))
-            elif snapshot_choice == default_label and sim["expense_inflation_on"]:
+            elif key_choice == "ret" and sim["expense_inflation_on"]:
                 exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], sim["years_until_ret"])
             else:
                 exp_nominal = sim["annual_expenses"]
             exp_real = sim["annual_expenses"]  # real baseline
 
+            income_rows = []
             for r in sorted(set(wrates)):
                 r_dec = r / 100.0
                 inc_nom = total_nominal * r_dec
