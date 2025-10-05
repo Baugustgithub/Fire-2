@@ -4,7 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-# Optional (touch-zoom charts)
+# Optional (touch-zoom, layered charts)
 try:
     import altair as alt
     ALT_AVAILABLE = True
@@ -81,8 +81,54 @@ def format_eta_decimal(eta_years):
     """Always show a decimal number of years (one decimal)."""
     if eta_years is None:
         return "> capped horizon"
-    # round to 0.1 year
     return f"{eta_years:.1f} years"
+
+def marginal_rate_for(brackets, taxable):
+    """Return marginal rate given start-of-bracket list."""
+    if taxable <= 0: return 0.0
+    n = len(brackets)
+    for i, (start, rate) in enumerate(brackets):
+        end = brackets[i+1][0] if i+1 < n else float('inf')
+        if start < taxable <= end:
+            return rate
+    return brackets[-1][1]
+
+def bracket_slices(brackets, taxable):
+    """List of dicts with 'from','to','rate','span','tax' for stacking viz."""
+    rows = []
+    n = len(brackets)
+    for i, (start, rate) in enumerate(brackets):
+        end = brackets[i+1][0] if i+1 < n else float('inf')
+        if taxable <= start:
+            break
+        span = min(taxable, end) - start
+        tax  = max(0.0, span * rate)
+        rows.append({"from": start, "to": min(taxable, end), "rate": rate, "span": span, "tax": tax})
+    return rows
+
+def recompute_tax_with_override(base_gross, pension_contrib, filing, contributions, override_key=None, override_value=None):
+    """Recompute taxes while optionally overriding ONE contribution (e.g., set to 0)."""
+    contribs = dict(contributions)
+    if override_key is not None:
+        contribs[override_key] = override_value
+
+    std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing == "Single" else STANDARD_DEDUCTION_2025_MARRIED
+    fed_br = FEDERAL_BRACKETS_2025_SINGLE if filing == "Single" else FEDERAL_BRACKETS_2025_MARRIED
+
+    agi = base_gross - pension_contrib
+    agi_reducing_accounts = [
+        "403(b) Traditional", "457(b) Traditional",
+        "401(a) Employee", "Solo 401(k) Employee",
+        "SEP IRA", "SIMPLE IRA", "Traditional IRA", "HSA", "FSA"
+    ]
+    for acct in agi_reducing_accounts:
+        agi -= contribs.get(acct, 0)
+    agi -= min(contribs.get("529 Plan", 0), 4000)
+
+    taxable = max(agi - std_ded, 0)
+    fed = calculate_tax(taxable, fed_br)
+    sta = calculate_tax(taxable, VIRGINIA_BRACKETS_2025)
+    return taxable, fed, sta, fed + sta
 
 # =========================
 # ---- App ----
@@ -327,6 +373,9 @@ if clicked:
             portfolio[acct] = {"balance": 0.0, "return": normalize_return(r)}
     annual_contribs = {acct: contributions.get(acct, 0.0) for acct in portfolio.keys()}
 
+    # Record per-account history for charts
+    account_history = {acct: [] for acct in portfolio.keys()}
+
     # FI targets (real baseline)
     if swr <= 0:
         st.error("Safe Withdrawal Rate must be > 0%."); st.stop()
@@ -368,6 +417,11 @@ if clicked:
             r = portfolio[acct]["return"]
             portfolio[acct]["balance"] = portfolio[acct]["balance"] * (1 + r) + annual_contribs.get(acct, 0.0)
         total_balance = sum(b["balance"] for b in portfolio.values())
+
+        # record per-account balances after this year
+        for acct in portfolio:
+            account_history[acct].append(portfolio[acct]["balance"])
+
         years.append(year); balances.append(total_balance)
 
         if year == 5:  snapshot_5yr  = {acct: portfolio[acct]["balance"] for acct in portfolio}
@@ -422,6 +476,8 @@ if clicked:
         real_snapshot_5yr=real_snapshot_5yr, real_snapshot_10yr=real_snapshot_10yr,
         # milestone ETAs (decimal years)
         milestone_defs=milestone_defs, milestone_eta=milestone_eta,
+        # per-account history for stacked chart
+        account_history=account_history, accounts=list(account_history.keys()),
         # meta
         swr_percent=swr_percent, swr=swr, annual_expenses=annual_expenses,
         years_until_ret=years_until_ret, inflation=inflation, inflation_percent=inflation_percent,
@@ -452,26 +508,124 @@ else:
         for msg in sim["warn_msgs"]:
             st.warning(msg)
 
-        with st.expander("Contribution Impact (vs. no contributions)", expanded=False):
-            std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status == "Single" else STANDARD_DEDUCTION_2025_MARRIED
-            baseline_pension_contribution = sim["pension_contribution"]
-            baseline_agi = gross_salary - baseline_pension_contribution
-            baseline_taxable_income = max(baseline_agi - std_ded, 0)
-            baseline_federal_tax = calculate_tax(baseline_taxable_income, FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED)
-            baseline_state_tax = calculate_tax(baseline_taxable_income, VIRGINIA_BRACKETS_2025)
-            baseline_total_tax = baseline_federal_tax + baseline_state_tax
-            baseline_after_tax_income = gross_salary - baseline_pension_contribution - baseline_total_tax
-            baseline_disposable_income = baseline_after_tax_income
+        # Marginal rate metrics + bracket visualizer
+        with st.expander("Bracket visualizer & marginal rates", expanded=True):
+            fed_marg = marginal_rate_for(
+                FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED,
+                sim["taxable_income"]
+            )
+            va_marg  = marginal_rate_for(VIRGINIA_BRACKETS_2025, sim["taxable_income"])
+            combined_simple = fed_marg + va_marg
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Δ Taxes Paid", money(baseline_total_tax - sim["total_tax"]))
-            col2.metric("Annual Savings (total)", money(sim["total_savings"]))
-            col3.metric("Δ Disposable ($)", money((sim["after_tax_income"] - sim["post_tax_savings"]) - baseline_disposable_income))
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Federal marginal rate", pct(fed_marg))
+            c2.metric("Virginia marginal rate", pct(va_marg))
+            c3.metric("Combined (simple)", pct(combined_simple))
+
+            fed_slices = bracket_slices(
+                FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED,
+                sim["taxable_income"]
+            )
+            va_slices  = bracket_slices(VIRGINIA_BRACKETS_2025, sim["taxable_income"])
+
+            fed_df = pd.DataFrame([{"System":"Federal","Bracket Start": r["from"], "Span": r["span"], "Tax": r["tax"], "Rate": r["rate"]} for r in fed_slices])
+            va_df  = pd.DataFrame([{"System":"Virginia","Bracket Start": r["from"], "Span": r["span"], "Tax": r["tax"], "Rate": r["rate"]} for r in va_slices])
+            stack_df = pd.concat([fed_df, va_df], ignore_index=True)
+
+            if ALT_AVAILABLE and len(stack_df):
+                st.caption("Income taxed per bracket (bar = income slice; color = marginal rate). Hover for $ tax in that slice.")
+                chart = (
+                    alt.Chart(stack_df)
+                      .mark_bar()
+                      .encode(
+                          x=alt.X("Bracket Start:Q", title="Taxable income slice start ($)", axis=alt.Axis(format="~s")),
+                          y=alt.Y("Span:Q", title="Amount taxed in slice ($)", axis=alt.Axis(format="~s")),
+                          color=alt.Color("Rate:Q", scale=alt.Scale(scheme="blues"), legend=alt.Legend(format=".0%")),
+                          column=alt.Column("System:N", header=alt.Header(title=None)),
+                          tooltip=[
+                              "System:N",
+                              alt.Tooltip("Bracket Start:Q", title="Slice start", format="$,.0f"),
+                              alt.Tooltip("Span:Q", title="Slice amount", format="$,.0f"),
+                              alt.Tooltip("Rate:Q", title="Rate", format=".0%"),
+                              alt.Tooltip("Tax:Q", title="Tax on slice", format="$,.0f"),
+                          ],
+                      )
+                      .properties(height=220)
+                )
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.dataframe(stack_df, use_container_width=True)
+
+        # Waterfall: Gross → AGI → Taxable
+        with st.expander("Income path: Gross → AGI → Taxable", expanded=False):
+            gross = gross_salary
+            pension = sim["pension_contribution"]
+            agi_reductions = sum(contributions.get(a,0) for a in [
+                "403(b) Traditional","457(b) Traditional","401(a) Employee","Solo 401(k) Employee",
+                "SEP IRA","SIMPLE IRA","Traditional IRA","HSA","FSA"
+            ]) + min(contributions.get("529 Plan",0), 4000)
+            std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status=="Single" else STANDARD_DEDUCTION_2025_MARRIED
+
+            wf = pd.DataFrame([
+                {"Step":"Gross salary","Amount": gross},
+                {"Step":"− Pension","Amount": -pension},
+                {"Step":"− AGI reductions","Amount": -agi_reductions},
+                {"Step":"= AGI","Amount": gross - pension - agi_reductions},
+                {"Step":"− Standard deduction","Amount": -std_ded},
+                {"Step":"= Taxable income","Amount": sim["taxable_income"]},
+            ])
+
+            if ALT_AVAILABLE:
+                wf["idx"] = range(len(wf))
+                bars = alt.Chart(wf).mark_bar().encode(
+                    x=alt.X("idx:N", title=None, axis=alt.Axis(labels=False)),
+                    y=alt.Y("Amount:Q", title="Δ amount ($)", axis=alt.Axis(format="~s")),
+                    color=alt.Color("Amount:Q", legend=None, scale=alt.Scale(range=["#fca5a5","#93c5fd"])),
+                    tooltip=[alt.Tooltip("Step:N"), alt.Tooltip("Amount:Q", format="$,.0f")]
+                ).properties(height=220)
+                labels = alt.Chart(wf).mark_text(dy=-10).encode(x="idx:N", y="Amount:Q", text="Step:N")
+                st.altair_chart(bars + labels, use_container_width=True)
+            else:
+                st.dataframe(wf, use_container_width=True)
+
+        # Which contributions saved the most tax?
+        with st.expander("Which contributions saved you the most tax?", expanded=True):
+            impact_rows = []
+            pension = sim["pension_contribution"]
+
+            pre_tax_like = [
+                "403(b) Traditional","457(b) Traditional",
+                "401(a) Employee","Solo 401(k) Employee",
+                "SEP IRA","SIMPLE IRA","Traditional IRA","HSA","FSA"
+            ]
+            for acct in pre_tax_like + ["529 Plan"]:
+                amt = contributions.get(acct, 0.0)
+                if amt <= 0: continue
+                _, _, _, tot2 = recompute_tax_with_override(
+                    base_gross=gross_salary,
+                    pension_contrib=pension,
+                    filing=filing_status,
+                    contributions=contributions,
+                    override_key=acct,
+                    override_value=0.0
+                )
+                delta_tax = tot2 - sim["total_tax"]
+                impact_rows.append({"Account": acct, "Your contribution": money(amt), "Estimated tax saved": money(delta_tax)})
+
+            if impact_rows:
+                imp_df = pd.DataFrame(impact_rows)
+                # sort by numeric value of saved tax
+                imp_df["_sort"] = imp_df["Estimated tax saved"].replace({r'[$,]':''}, regex=True).astype(float)
+                imp_df = imp_df.sort_values(by="_sort", ascending=False).drop(columns=["_sort"])
+                st.dataframe(imp_df, use_container_width=True)
+                st.caption("Method: turn each contribution OFF (one at a time), recompute taxes, and show the resulting increase. "
+                           "Approximate; ignores credits/phaseouts and employer match effects.")
+            else:
+                st.info("No AGI-reducing contributions detected for this analysis.")
 
     # ---------- RETIREMENT PLANNING ----------
     with retire_tab:
         st.subheader("🏁 FI Milestones (ordered by time)")
-        # Ordered milestone table, decimal years everywhere
         ordered = []
         ordered_names = [
             "Coast FI",
@@ -505,46 +659,89 @@ else:
 - **Obese FI**: **200%** of expenses (very large margin).
 """)
 
-        # ---- Growth chart (Altair if available, with cap) ----
+        # ---- Growth chart ----
         st.subheader("📈 Investment Growth Over Time")
+
         chart_units = st.radio(
             "Chart units", ["Nominal ($ at future dates)", "Real (today's $)"],
             index=1, horizontal=True, key="chart_units_mode"
         )
         use_real = (chart_units == "Real (today's $)")
-        series = sim["real_balances"] if use_real else sim["balances"]
+        logy = st.checkbox("Log scale (Y)", value=False, key="logy")
+
+        show_guides = st.checkbox("Show FI guide lines (Lean / Full / Chubby / Obese)", value=True)
+        show_markers = st.checkbox("Show milestone markers", value=True)
+        show_stacked = st.checkbox("Show per-account stacked area (advanced)", value=False,
+                                   help="See what actually drives growth (composition over time).")
 
         guide_year = min(sim["years_until_ret"], sim["sim_years"])
 
-        if ALT_AVAILABLE:
-            chart_df = pd.DataFrame({
-                "Year": sim["years"],
-                "Nominal": sim["balances"],
-                "Real": sim["real_balances"],
-            })
-            y_field = "Real" if use_real else "Nominal"
-            base = alt.Chart(chart_df).mark_line().encode(
-                x=alt.X("Year:Q", title="Years from today", scale=alt.Scale(domain=(0, sim["sim_years"]))),
-                y=alt.Y(f"{y_field}:Q", title="Portfolio Value ($)", axis=alt.Axis(format="~s")),
-                tooltip=[alt.Tooltip("Year:Q"), alt.Tooltip(f"{y_field}:Q", title="Value", format="$.2s")]
-            ).properties(height=320).interactive()
-            st.altair_chart(base, use_container_width=True)
-        else:
-            fig2, ax2 = plt.subplots()
-            years = sim["years"]
-            if years and series:
-                ax2.plot(years, series, label="Projected Portfolio Value")
-                # Vertical markers (within cap)
-                for h, label in [(5, "5 yrs"), (10, "10 yrs")]:
-                    if h <= sim["sim_years"]:
-                        ax2.axvline(h, linestyle=':', alpha=0.35)
-                        y_for_text = series[h-1] * 0.02 if series[h-1] > 0 else 1.0
-                        ax2.annotate(label, xy=(h, y_for_text), xytext=(h+0.2, y_for_text*1.05), fontsize=8)
+        main_df = pd.DataFrame({
+            "Year": sim["years"],
+            "Nominal": sim["balances"],
+            "Real": sim["real_balances"],
+        })
+        y_field = "Real" if use_real else "Nominal"
 
-                # Guide-lines (Lean/Full/Chubby) — keep chart uncluttered; Obese not drawn to avoid noise
+        if ALT_AVAILABLE and len(main_df) > 0:
+            y_scale = alt.Scale(type='log') if logy else alt.Scale()
+            base = alt.Chart(main_df).mark_line().encode(
+                x=alt.X("Year:Q", title="Years from today", scale=alt.Scale(domain=(0, sim['sim_years']))),
+                y=alt.Y(f"{y_field}:Q", title="Portfolio Value ($)", scale=y_scale, axis=alt.Axis(format="~s")),
+                tooltip=[alt.Tooltip("Year:Q"), alt.Tooltip(f"{y_field}:Q", title="Value", format="$.2s")]
+            ).properties(height=340).interactive()
+
+            layers = []
+
+            # Shading 0–5y and 5–10y
+            shade_rows = []
+            if sim["sim_years"] >= 5:  shade_rows.append({"x0": 0, "x1": 5})
+            if sim["sim_years"] >= 10: shade_rows.append({"x0": 5, "x1": 10})
+            if shade_rows:
+                shade_df = pd.DataFrame(shade_rows)
+                shades = alt.Chart(shade_df).mark_rect(opacity=0.08).encode(
+                    x="x0:Q", x2="x1:Q", y=alt.value(0), y2=alt.value(1),
+                ).properties(height=340)
+                layers.append(shades)
+
+            # Main line
+            layers.append(base)
+
+            # Milestone markers
+            if show_markers and "milestone_eta" in sim:
+                mdata = []
+                for name in ordered_names:
+                    eta = sim["milestone_eta"].get(name)
+                    if eta is None or eta <= 0 or eta > sim["sim_years"]:
+                        continue
+                    lo_idx = max(0, int(eta) - 1)
+                    hi_idx = min(len(main_df) - 1, int(eta))
+                    lo_y = main_df[y_field].iloc[lo_idx]
+                    hi_y = main_df[y_field].iloc[hi_idx]
+                    frac = eta - int(eta)
+                    val = lo_y + (hi_y - lo_y) * frac
+                    mdata.append({"Year": float(eta), "Value": float(val), "Milestone": name, "ETA (yrs)": f"{eta:.1f}"})
+                if mdata:
+                    mdf = pd.DataFrame(mdata)
+                    markers = alt.Chart(mdf).mark_point(size=70, filled=True).encode(
+                        x="Year:Q",
+                        y=alt.Y("Value:Q", scale=y_scale),
+                        color=alt.value("#666"),
+                        tooltip=["Milestone:N", "ETA (yrs):N", alt.Tooltip("Value:Q", format="$.2s")],
+                    )
+                    labels = alt.Chart(mdf).mark_text(dy=-10, fontSize=10).encode(
+                        x="Year:Q", y="Value:Q", text="Milestone:N",
+                    )
+                    layers += [markers, labels]
+
+            # Guide lines
+            if show_guides:
                 if use_real:
-                    full_line, chubby_line, lean_line = sim["base_full_fi"], sim["base_chubby_fi"], sim["base_lean_fi"]
-                    caption_tail = " (real, today's $)"
+                    full_line   = sim["base_full_fi"]
+                    chubby_line = sim["base_chubby_fi"]
+                    lean_line   = sim["base_lean_fi"]
+                    obese_line  = sim["base_obese_fi"]
+                    caption = " (real)"
                 else:
                     if sim["expense_inflation_on"]:
                         inflated_exp = inflate_expense(sim["annual_expenses"], sim["inflation"], guide_year)
@@ -553,26 +750,69 @@ else:
                     full_line   = inflated_exp / sim["swr"]
                     chubby_line = (inflated_exp * 1.20) / sim["swr"]
                     lean_line   = (inflated_exp * 0.75) / sim["swr"]
-                    caption_tail = f" (nominal @ ~{guide_year}y; expense inflation {'ON' if sim['expense_inflation_on'] else 'OFF'})"
+                    obese_line  = (inflated_exp * 2.00) / sim["swr"]
+                    caption = f" (nominal @ ~{guide_year}y; infl {'ON' if sim['expense_inflation_on'] else 'OFF'})"
+                rules_df = pd.DataFrame({
+                    "Label": [f"Lean{caption}", f"Full{caption}", f"Chubby{caption}", f"Obese{caption}"],
+                    "Y":     [lean_line,        full_line,        chubby_line,        obese_line]
+                })
+                rules = alt.Chart(rules_df).mark_rule(strokeDash=[6,4]).encode(
+                    y=alt.Y("Y:Q", scale=y_scale),
+                    tooltip=["Label:N", alt.Tooltip("Y:Q", title="Target", format="$.2s")]
+                )
+                layers.append(rules)
 
-                ax2.axhline(y=full_line, linestyle='--', label=f'Full FI{caption_tail}')
-                ax2.axhline(y=chubby_line, linestyle=':',  label=f'Chubby FI{caption_tail}')
-                ax2.axhline(y=lean_line, linestyle='-.',   label=f'Lean FI{caption_tail}')
+            st.altair_chart(alt.layer(*layers), use_container_width=True)
 
-                # Full FI annotation
-                ffi = st.session_state["sim"]["full_fi_first_year"]
-                if ffi is not None and 1 <= ffi <= sim["sim_years"]:
-                    y = series[ffi-1]
-                    ax2.axvline(ffi, linestyle=':', alpha=0.6)
-                    ax2.scatter([ffi], [y], zorder=5)
-                    right_side = ffi < (len(years) * 0.7)
-                    ax2.annotate(f"Full FI in {ffi:.1f} yrs\n{money(y)}",
-                                 xy=(ffi, y),
-                                 xytext=(ffi + (1 if right_side else -1), y * 1.05),
-                                 arrowprops=dict(arrowstyle="->", lw=1),
-                                 fontsize=9, ha="left" if right_side else "right")
+            # Stacked per-account area (separate chart)
+            if show_stacked and "account_history" in sim and sim["account_history"]:
+                acct_df_rows = []
+                years_list = sim["years"]
+                defl = [(1.0 + sim["inflation"]) ** y for y in years_list]
+                for acct, series in sim["account_history"].items():
+                    for i, val in enumerate(series):
+                        y = years_list[i]
+                        amt = (val / defl[i]) if use_real else val
+                        acct_df_rows.append({"Year": y, "Account": acct, "Amount": amt})
+                acct_df = pd.DataFrame(acct_df_rows)
+
+                y_scale2 = alt.Scale(type='log') if logy else alt.Scale()
+                area = alt.Chart(acct_df).mark_area(opacity=0.55).encode(
+                    x=alt.X("Year:Q", title="Years from today", scale=alt.Scale(domain=(0, sim["sim_years"]))),
+                    y=alt.Y("sum(Amount):Q", title="Portfolio Value ($)", scale=y_scale2, axis=alt.Axis(format="~s")),
+                    color=alt.Color("Account:N", legend=alt.Legend(title="Account")),
+                    tooltip=[alt.Tooltip("Year:Q"),
+                             alt.Tooltip("Account:N"),
+                             alt.Tooltip("sum(Amount):Q", title="Amount", format="$.2s")]
+                ).properties(height=340).interactive()
+
+                st.caption("Per-account composition")
+                st.altair_chart(area, use_container_width=True)
+
+        else:
+            # Matplotlib fallback
+            fig2, ax2 = plt.subplots()
+            years = sim["years"]
+            series = sim["real_balances"] if use_real else sim["balances"]
+            if years and series:
+                ax2.plot(years, series, label="Projected Portfolio Value")
+                if logy: ax2.set_yscale('log')
+                for h in [5, 10]:
+                    if h <= sim["sim_years"]:
+                        ax2.axvline(h, linestyle=':', alpha=0.35)
+                # milestone dots
+                if "milestone_eta" in sim:
+                    for name, eta in sim["milestone_eta"].items():
+                        if eta is None or eta <= 0 or eta > sim["sim_years"]: continue
+                        i0 = max(0, int(eta) - 1)
+                        i1 = min(len(series) - 1, int(eta))
+                        y0, y1 = series[i0], series[i1]
+                        val = y0 + (y1 - y0) * (eta - int(eta))
+                        ax2.scatter([eta], [val], s=40, zorder=5)
                 ax2.set_xlim(0, sim["sim_years"])
-                ax2.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'${int(x/1000)}k' if x < 1_000_000 else f'${x/1_000_000:.1f}M'))
+                ax2.yaxis.set_major_formatter(
+                    ticker.FuncFormatter(lambda x, _: f'${int(x/1000)}k' if x < 1_000_000 else f'${x/1_000_000:.1f}M')
+                )
                 ax2.set_xlabel("Years from today"); ax2.set_ylabel("Portfolio Value ($)")
                 ax2.legend()
             else:
@@ -598,7 +838,6 @@ else:
             key="snapshot_choice",
         )
 
-        # Pick nominal snapshot & set guide horizon
         if snapshot_choice == five_label and sim.get("snapshot_5yr"):
             snapshot_to_use = sim["snapshot_5yr"]; snapshot_year_text = "(~5 years)"; guide_year = 5
         elif snapshot_choice == ten_label and sim.get("snapshot_10yr"):
@@ -620,7 +859,6 @@ else:
         else:
             real_snapshot = sim["real_snapshot_at_ret"]
 
-        # Buckets build
         def tax_bucket(acct_name: str) -> str:
             roth = {"Roth IRA", "403(b) Roth", "457(b) Roth"}
             traditional = {
@@ -651,8 +889,7 @@ else:
                 "Projected Balance (Real)":    money(bucket_sums_real.get(b, 0.0)),
             })
         with st.expander(f"Projected Balances by Tax Bucket {snapshot_year_text}", expanded=True):
-            bucket_df = pd.DataFrame(bucket_rows)
-            st.dataframe(bucket_df, use_container_width=True)
+            st.dataframe(pd.DataFrame(bucket_rows), use_container_width=True)
 
         acct_rows = []
         for acct in sorted(set(snapshot_to_use.keys()) | set(real_snapshot.keys())):
@@ -681,7 +918,6 @@ else:
             ).properties(height=220)
             st.altair_chart(bar, use_container_width=True)
 
-            # Optional: allocation pie by bucket (nominal)
             pie_df = pd.DataFrame({"Bucket": list(bucket_sums.keys()), "Amount": list(bucket_sums.values())})
             if len(pie_df):
                 pie = alt.Chart(pie_df).mark_arc().encode(
