@@ -383,7 +383,7 @@ if clicked:
     base_lean_fi    = (annual_expenses * 0.75) / swr
     base_chubby_fi  = (annual_expenses * 1.20) / swr
     base_fat_fi     = (annual_expenses * 1.50) / swr
-    base_obese_fi   = (annual_expenses * 2.00) / swr   # NEW
+    base_obese_fi   = (annual_expenses * 2.00) / swr
     base_barista_fi = (annual_expenses * 0.50) / swr
     base_flamingo_fi = 0.50 * base_full_fi
     coast_fi_target  = base_full_fi / ((1 + default_return_all_else) ** years_until_ret) if default_return_all_else > -1 else math.inf
@@ -396,7 +396,7 @@ if clicked:
         ("Chubby FI (~120% Expenses)", base_chubby_fi),
         ("Full FI (100% Expenses)", base_full_fi),
         ("Fat FI (150% Expenses)", base_fat_fi),
-        ("Obese FI (200% Expenses)", base_obese_fi),  # NEW
+        ("Obese FI (200% Expenses)", base_obese_fi),
     ]
 
     # Sim loop with age cap + fractional milestone ETAs
@@ -476,6 +476,7 @@ if clicked:
         real_snapshot_5yr=real_snapshot_5yr, real_snapshot_10yr=real_snapshot_10yr,
         # milestone ETAs (decimal years)
         milestone_defs=milestone_defs, milestone_eta=milestone_eta,
+        full_fi_first_year=full_fi_first_year,
         # per-account history for stacked chart
         account_history=account_history, accounts=list(account_history.keys()),
         # meta
@@ -508,8 +509,55 @@ else:
         for msg in sim["warn_msgs"]:
             st.warning(msg)
 
-        # Marginal rate metrics + bracket visualizer
-        with st.expander("Bracket visualizer & marginal rates", expanded=True):
+        # --- Contribution Impact: side-by-side ---
+        st.subheader("📊 Contribution Impact (side-by-side)")
+        std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status == "Single" else STANDARD_DEDUCTION_2025_MARRIED
+        baseline_pension = sim["pension_contribution"]
+        base_agi = gross_salary - baseline_pension
+        base_taxable_income = max(base_agi - std_ded, 0)
+        base_fed = calculate_tax(base_taxable_income, FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED)
+        base_state = calculate_tax(base_taxable_income, VIRGINIA_BRACKETS_2025)
+        base_total_tax = base_fed + base_state
+        base_after_tax_income = gross_salary - baseline_pension - base_total_tax
+        base_savings = 0.0
+        base_disposable = base_after_tax_income
+
+        with_total_tax = sim["total_tax"]
+        with_after_tax_income = sim["after_tax_income"]
+        with_savings = sim["total_savings"]
+        with_disposable = sim["after_tax_income"] - (sim["post_tax_savings"])
+
+        impact_df = pd.DataFrame([
+            {"Metric":"Taxes Paid", "Scenario":"No contributions", "Amount": base_total_tax},
+            {"Metric":"Taxes Paid", "Scenario":"With contributions", "Amount": with_total_tax},
+            {"Metric":"After-Tax Income", "Scenario":"No contributions", "Amount": base_after_tax_income},
+            {"Metric":"After-Tax Income", "Scenario":"With contributions", "Amount": with_after_tax_income},
+            {"Metric":"Savings", "Scenario":"No contributions", "Amount": base_savings},
+            {"Metric":"Savings", "Scenario":"With contributions", "Amount": with_savings},
+            {"Metric":"Disposable", "Scenario":"No contributions", "Amount": base_disposable},
+            {"Metric":"Disposable", "Scenario":"With contributions", "Amount": with_disposable},
+        ])
+
+        if ALT_AVAILABLE:
+            chart = (
+                alt.Chart(impact_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Metric:N", title=None),
+                    y=alt.Y("Amount:Q", title="$", axis=alt.Axis(format="~s")),
+                    color=alt.Color("Scenario:N", legend=alt.Legend(orient="bottom")),
+                    column=alt.Column("Metric:N", header=alt.Header(title=None, labelAngle=0)),
+                    tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Metric:N"),
+                             alt.Tooltip("Amount:Q", format="$,.0f")],
+                )
+                .properties(height=220)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.dataframe(impact_df.pivot(index="Metric", columns="Scenario", values="Amount").applymap(lambda v: f"${v:,.0f}"))
+
+        # --- Marginal rates & bracket viz (collapsible) ---
+        with st.expander("Bracket visualizer & marginal rates", expanded=False):
             fed_marg = marginal_rate_for(
                 FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED,
                 sim["taxable_income"]
@@ -533,7 +581,6 @@ else:
             stack_df = pd.concat([fed_df, va_df], ignore_index=True)
 
             if ALT_AVAILABLE and len(stack_df):
-                st.caption("Income taxed per bracket (bar = income slice; color = marginal rate). Hover for $ tax in that slice.")
                 chart = (
                     alt.Chart(stack_df)
                       .mark_bar()
@@ -556,7 +603,7 @@ else:
             else:
                 st.dataframe(stack_df, use_container_width=True)
 
-        # Waterfall: Gross → AGI → Taxable
+        # --- Waterfall Gross → AGI → Taxable (collapsible) ---
         with st.expander("Income path: Gross → AGI → Taxable", expanded=False):
             gross = gross_salary
             pension = sim["pension_contribution"]
@@ -588,8 +635,8 @@ else:
             else:
                 st.dataframe(wf, use_container_width=True)
 
-        # Which contributions saved the most tax?
-        with st.expander("Which contributions saved you the most tax?", expanded=True):
+        # --- Which contributions saved the most tax? ---
+        with st.expander("Which contributions saved you the most tax?", expanded=False):
             impact_rows = []
             pension = sim["pension_contribution"]
 
@@ -614,7 +661,6 @@ else:
 
             if impact_rows:
                 imp_df = pd.DataFrame(impact_rows)
-                # sort by numeric value of saved tax
                 imp_df["_sort"] = imp_df["Estimated tax saved"].replace({r'[$,]':''}, regex=True).astype(float)
                 imp_df = imp_df.sort_values(by="_sort", ascending=False).drop(columns=["_sort"])
                 st.dataframe(imp_df, use_container_width=True)
@@ -661,7 +707,6 @@ else:
 
         # ---- Growth chart ----
         st.subheader("📈 Investment Growth Over Time")
-
         chart_units = st.radio(
             "Chart units", ["Nominal ($ at future dates)", "Real (today's $)"],
             index=1, horizontal=True, key="chart_units_mode"
@@ -707,10 +752,11 @@ else:
             # Main line
             layers.append(base)
 
-            # Milestone markers
+            # --- Milestone markers (clean, non-overlapping labels) ---
             if show_markers and "milestone_eta" in sim:
+                names_ordered = ordered_names
                 mdata = []
-                for name in ordered_names:
+                for name in names_ordered:
                     eta = sim["milestone_eta"].get(name)
                     if eta is None or eta <= 0 or eta > sim["sim_years"]:
                         continue
@@ -720,19 +766,36 @@ else:
                     hi_y = main_df[y_field].iloc[hi_idx]
                     frac = eta - int(eta)
                     val = lo_y + (hi_y - lo_y) * frac
-                    mdata.append({"Year": float(eta), "Value": float(val), "Milestone": name, "ETA (yrs)": f"{eta:.1f}"})
+                    mdata.append({"Year": float(eta), "Value": float(val), "Milestone": name, "ETA": float(f"{eta:.1f}")})
+
                 if mdata:
-                    mdf = pd.DataFrame(mdata)
-                    markers = alt.Chart(mdf).mark_point(size=70, filled=True).encode(
+                    mdf = pd.DataFrame(mdata).sort_values("Year")
+                    picked = []
+                    gap_x = 1.2   # years
+                    gap_y_ratio = 0.10  # 10% vertical gap
+                    for row in mdf.itertuples(index=False):
+                        if picked:
+                            prev = picked[-1]
+                            close_x = (row.Year - prev["Year"]) < gap_x
+                            close_y = abs(row.Value - prev["Value"]) < (prev["Value"] * gap_y_ratio)
+                            if close_x and close_y:
+                                continue
+                        picked.append({"Year": row.Year, "Value": row.Value, "Milestone": row.Milestone, "ETA": row.ETA})
+                    pick_df = pd.DataFrame(picked)
+
+                    points = alt.Chart(mdf).mark_point(size=55, filled=True, opacity=0.6).encode(
                         x="Year:Q",
                         y=alt.Y("Value:Q", scale=y_scale),
-                        color=alt.value("#666"),
-                        tooltip=["Milestone:N", "ETA (yrs):N", alt.Tooltip("Value:Q", format="$.2s")],
+                        tooltip=["Milestone:N", alt.Tooltip("ETA:Q", title="ETA (yrs)", format=".1f"),
+                                 alt.Tooltip("Value:Q", format="$.2s")]
                     )
-                    labels = alt.Chart(mdf).mark_text(dy=-10, fontSize=10).encode(
-                        x="Year:Q", y="Value:Q", text="Milestone:N",
+                    labels = alt.Chart(pick_df).mark_text(dy=-8, fontSize=10, stroke="black", strokeWidth=0.5).encode(
+                        x="Year:Q", y=alt.Y("Value:Q", scale=y_scale), text=alt.Text("Milestone:N")
                     )
-                    layers += [markers, labels]
+                    eta_labels = alt.Chart(pick_df).mark_text(dy=8, fontSize=9).encode(
+                        x="Year:Q", y=alt.Y("Value:Q", scale=y_scale), text=alt.Text("ETA:Q", format=".1f")
+                    )
+                    layers += [points, labels, eta_labels]
 
             # Guide lines
             if show_guides:
@@ -838,6 +901,7 @@ else:
             key="snapshot_choice",
         )
 
+        # Nominal snapshot & guide horizon
         if snapshot_choice == five_label and sim.get("snapshot_5yr"):
             snapshot_to_use = sim["snapshot_5yr"]; snapshot_year_text = "(~5 years)"; guide_year = 5
         elif snapshot_choice == ten_label and sim.get("snapshot_10yr"):
@@ -881,24 +945,24 @@ else:
         for acct, bal in real_snapshot.items():
             b = tax_bucket(acct); bucket_sums_real[b] = bucket_sums_real.get(b, 0.0) + bal
 
-        bucket_rows = []
-        for b in sorted(set(bucket_sums) | set(bucket_sums_real)):
-            bucket_rows.append({
-                "Bucket": b,
-                "Projected Balance (Nominal)": money(bucket_sums.get(b, 0.0)),
-                "Projected Balance (Real)":    money(bucket_sums_real.get(b, 0.0)),
-            })
         with st.expander(f"Projected Balances by Tax Bucket {snapshot_year_text}", expanded=True):
+            bucket_rows = []
+            for b in sorted(set(bucket_sums) | set(bucket_sums_real)):
+                bucket_rows.append({
+                    "Bucket": b,
+                    "Projected Balance (Nominal)": money(bucket_sums.get(b, 0.0)),
+                    "Projected Balance (Real)":    money(bucket_sums_real.get(b, 0.0)),
+                })
             st.dataframe(pd.DataFrame(bucket_rows), use_container_width=True)
 
-        acct_rows = []
-        for acct in sorted(set(snapshot_to_use.keys()) | set(real_snapshot.keys())):
-            acct_rows.append({
-                "Account": acct, "Bucket": tax_bucket(acct),
-                "Nominal": money(snapshot_to_use.get(acct, 0.0)),
-                "Real":    money(real_snapshot.get(acct, 0.0)),
-            })
         with st.expander(f"Per-Account Balances {snapshot_year_text}", expanded=False):
+            acct_rows = []
+            for acct in sorted(set(snapshot_to_use.keys()) | set(real_snapshot.keys())):
+                acct_rows.append({
+                    "Account": acct, "Bucket": tax_bucket(acct),
+                    "Nominal": money(snapshot_to_use.get(acct, 0.0)),
+                    "Real":    money(real_snapshot.get(acct, 0.0)),
+                })
             st.dataframe(pd.DataFrame(acct_rows), use_container_width=True)
 
         # ---- Total Assets Summary (Nominal vs Real) ----
@@ -918,13 +982,45 @@ else:
             ).properties(height=220)
             st.altair_chart(bar, use_container_width=True)
 
-            pie_df = pd.DataFrame({"Bucket": list(bucket_sums.keys()), "Amount": list(bucket_sums.values())})
-            if len(pie_df):
-                pie = alt.Chart(pie_df).mark_arc().encode(
-                    theta="Amount:Q",
-                    color=alt.Color("Bucket:N", legend=alt.Legend(title="Bucket")),
-                    tooltip=[alt.Tooltip("Bucket:N"), alt.Tooltip("Amount:Q", format="$.2s")]
-                ).properties(height=260)
-                st.altair_chart(pie, use_container_width=True)
-        else:
-            st.caption("Install `altair` to see summary charts. Showing totals above.")
+        # ---- NEW: Income you could draw from the portfolio ----
+        st.subheader("💸 Income You Could Draw")
+        st.caption("Pick withdrawal rates to preview sustainable income from this snapshot.")
+        wrates = st.multiselect(
+            "Withdrawal rates",
+            options=[2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0],
+            default=[swr_percent, 3.0, 4.0, 5.0],
+            help="All results shown for both Nominal and Real (today’s $)."
+        )
+        wrates = sorted(set(wrates))
+        if wrates:
+            income_rows = []
+            # expense baseline
+            if snapshot_choice in (five_label, ten_label) and sim["expense_inflation_on"]:
+                # If user is thinking nominal at a horizon and inflation-on, inflate expense to that horizon for % coverage (nominal)
+                horizon = 5 if snapshot_choice == five_label else 10
+                exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], horizon)
+            elif snapshot_choice == fi_label and sim.get("full_fi_first_year"):
+                exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], int(sim["full_fi_first_year"]))
+            elif snapshot_choice == default_label and sim["expense_inflation_on"]:
+                exp_nominal = inflate_expense(sim["annual_expenses"], sim["inflation"], sim["years_until_ret"])
+            else:
+                exp_nominal = sim["annual_expenses"]
+
+            exp_real = sim["annual_expenses"]  # real baseline
+
+            for r in wrates:
+                r_dec = r / 100.0
+                inc_nom = total_nominal * r_dec
+                inc_real = total_real * r_dec
+                coverage_nom = (inc_nom / exp_nominal) if exp_nominal > 0 else 0.0
+                coverage_real = (inc_real / exp_real) if exp_real > 0 else 0.0
+                income_rows.append({
+                    "Withdrawal Rate": f"{r:.1f}%",
+                    "Annual Income (Nominal)": money(inc_nom),
+                    "Covers Expenses (Nominal)": f"{coverage_nom*100:.0f}%",
+                    "Annual Income (Real)": money(inc_real),
+                    "Covers Expenses (Real)": f"{coverage_real*100:.0f}%"
+                })
+            st.table(pd.DataFrame(income_rows))
+
+        st.caption("Nominal uses the raw dollar snapshot; Real discounts to today’s dollars using your CPI input.")
