@@ -12,7 +12,7 @@ except Exception:
     ALT_AVAILABLE = False
 
 # ----------------------------
-# Session: where we keep sims
+# Session: persistent results
 # ----------------------------
 if "sim" not in st.session_state:
     st.session_state["sim"] = None
@@ -94,6 +94,10 @@ def normalize_return(r):
         r_float = r_float / 100.0
     return max(-0.90, min(2.00, r_float))
 
+def inflate_expense(base_expense: float, cpi: float, years: int) -> float:
+    """Nominal expense after 'years' of inflation."""
+    return base_expense * ((1.0 + cpi) ** max(0, years))
+
 # =========================
 # ---- App ----
 # =========================
@@ -108,7 +112,7 @@ with st.expander("Assumptions", expanded=False):
         "- Virginia 529 deduction capped at **$4,000**.\n"
         "- **SWR** drives FI targets (you control the %).\n"
         "- **Horizon** uses **Years until retirement = target age − current age**.\n"
-        "- This is a simplification (ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc.)."
+        "- Simplified model: ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc."
     )
 
 # ---- Sidebar Inputs ----
@@ -123,6 +127,13 @@ annual_expenses = st.sidebar.number_input("Annual Expenses ($)", value=45000, st
 # SWR control
 swr_percent = st.sidebar.number_input("Safe Withdrawal Rate (%)", min_value=2.0, max_value=7.0, value=4.0, step=0.1)
 swr = swr_percent / 100.0
+
+# Inflation controls
+st.sidebar.header("Inflation")
+inflation_percent = st.sidebar.number_input("Annual CPI (%)", min_value=0.0, max_value=10.0, value=3.0, step=0.1)
+inflation = inflation_percent / 100.0
+expense_inflation_on = st.sidebar.checkbox("Inflate expenses by CPI for nominal FI targets", value=False,
+    help="When ON, FI guide-lines (Lean/Full/Chubby) are computed with expenses inflated to the selected horizon. In Real mode, targets are already in today's dollars.")
 
 # Horizon
 st.sidebar.header("Retirement Horizon")
@@ -139,7 +150,7 @@ default_return_all_else = 0.08   # 8% default for “everything else”
 
 st.sidebar.header("Choose Accounts to Contribute To")
 
-# Core with your requested defaults CHECKED + default contribution amounts
+# Core with requested defaults CHECKED + default contributions
 with st.sidebar.container():
     st.markdown("**Core account types**")
     core_accounts = {
@@ -150,7 +161,7 @@ with st.sidebar.container():
         "457(b) Traditional": st.checkbox("457(b) Traditional", value=True),
         "457(b) Roth": st.checkbox("457(b) Roth", value=False),
         "403(b) Traditional": st.checkbox("403(b) Traditional", value=True),
-        "403(b) Roth": st.checkbox("403(b) Roth", value=True),  # has a starting balance in defaults
+        "403(b) Roth": st.checkbox("403(b) Roth", value=True),  # has a starting balance
     }
 
 with st.sidebar.expander("More account types (optional)"):
@@ -210,14 +221,14 @@ else:
 # ==============================================
 
 st.sidebar.header("Granular balances & returns (optional)")
-# Default ON per your request
+# Default ON per request
 granular_mode = st.sidebar.checkbox("Enable granular balances & per-account returns", value=True)
 
 ALL_ACCOUNTS = list(core_accounts.keys()) + list(more_accounts.keys())
 account_start_balances = {}
 account_returns = {}
 
-# Your requested default balances & returns:
+# Default balances & returns:
 DEFAULT_BALANCES = {
     "Crypto": 250_000,
     "403(b) Traditional": 176_000,
@@ -232,17 +243,14 @@ DEFAULT_RETURNS = {
     # everything else -> 8%
 }
 
-# Set a default “current total” to match the sum of the defaults so Other=0 by default
 default_total_investments = sum(DEFAULT_BALANCES.values())
 
-# Portfolio-level default current total
 current_investments = st.sidebar.number_input(
     "Current Total Investment Value ($)",
     value=default_total_investments,
     step=1000
 )
 
-# Default selected accounts for granular mode (the ones you gave balances for)
 default_granular_selection = list(DEFAULT_BALANCES.keys())
 
 if granular_mode:
@@ -252,7 +260,6 @@ if granular_mode:
         options=ALL_ACCOUNTS,
         default=default_granular_selection
     )
-
     for acct in chosen_accounts:
         start_default = DEFAULT_BALANCES.get(acct, 0.0)
         ret_default = DEFAULT_RETURNS.get(acct, default_return_all_else)
@@ -358,34 +365,38 @@ if clicked:
             portfolio[acct] = {"balance": 0.0, "return": normalize_return(r)}
     annual_contribs = {acct: contributions.get(acct, 0.0) for acct in portfolio.keys()}
 
-    # Targets
+    # Targets (real dollars baseline)
     if swr <= 0:
         st.error("Safe Withdrawal Rate must be > 0%.")
         st.stop()
-    full_fi_target     = annual_expenses / swr
-    lean_fi_target     = (annual_expenses * 0.75) / swr
-    chubby_fi_target   = (annual_expenses * 1.20) / swr
-    fat_fi_target      = (annual_expenses * 1.50) / swr
-    barista_fi_target  = (annual_expenses * 0.50) / swr
-    flamingo_fi_target = 0.50 * full_fi_target
-    coast_fi_target    = full_fi_target / ((1 + default_return_all_else) ** years_until_ret) if default_return_all_else > -1 else math.inf
+
+    base_full_fi = annual_expenses / swr
+    base_lean_fi = (annual_expenses * 0.75) / swr
+    base_chubby_fi = (annual_expenses * 1.20) / swr
+    base_fat_fi = (annual_expenses * 1.50) / swr
+    base_barista_fi = (annual_expenses * 0.50) / swr
+    base_flamingo_fi = 0.50 * base_full_fi
+    coast_fi_target = base_full_fi / ((1 + default_return_all_else) ** years_until_ret) if default_return_all_else > -1 else math.inf
 
     milestone_defs = [
         ("Coast FI", coast_fi_target),
-        ("Flamingo FI (50% of FI #)", flamingo_fi_target),
-        ("Barista FI (covers ~50% of expenses)", barista_fi_target),
-        ("Lean FI (75% Expenses)", lean_fi_target),
-        ("Chubby FI (~120% Expenses)", chubby_fi_target),
-        ("Full FI (100% Expenses)", full_fi_target),
-        ("Fat FI (150% Expenses)", fat_fi_target),
+        ("Flamingo FI (50% of FI #)", base_flamingo_fi),
+        ("Barista FI (covers ~50% of expenses)", base_barista_fi),
+        ("Lean FI (75% Expenses)", base_lean_fi),
+        ("Chubby FI (~120% Expenses)", base_chubby_fi),
+        ("Full FI (100% Expenses)", base_full_fi),
+        ("Fat FI (150% Expenses)", base_fat_fi),
     ]
 
+    # Sim loop (nominal balances)
     years, balances = [], []
     milestone_years = {name: 0 if sum(b["balance"] for b in portfolio.values()) >= target else None
                        for name, target in milestone_defs}
     snapshot_at_ret = None
     full_fi_first_year = None
     snapshot_full_fi = None
+    snapshot_5yr = None
+    snapshot_10yr = None
 
     for year in range(1, 51):
         for acct in portfolio:
@@ -394,18 +405,39 @@ if clicked:
         total_balance = sum(b["balance"] for b in portfolio.values())
         years.append(year); balances.append(total_balance)
 
-        if full_fi_first_year is None and total_balance >= full_fi_target:
+        if year == 5:
+            snapshot_5yr = {acct: portfolio[acct]["balance"] for acct in portfolio}
+        if year == 10:
+            snapshot_10yr = {acct: portfolio[acct]["balance"] for acct in portfolio}
+
+        if full_fi_first_year is None and total_balance >= base_full_fi:
             full_fi_first_year = year
             snapshot_full_fi = {acct: portfolio[acct]["balance"] for acct in portfolio}
+
         for name, target in milestone_defs:
             if milestone_years[name] is None and total_balance >= target:
                 milestone_years[name] = year
+
         if year == years_until_ret:
             snapshot_at_ret = {acct: portfolio[acct]["balance"] for acct in portfolio}
     if snapshot_at_ret is None:
         snapshot_at_ret = {acct: portfolio[acct]["balance"] for acct in portfolio}
 
-    # Save everything so toggling radios doesn't wipe results
+    # Real (today's $) balances from nominal, discounted by CPI
+    deflator = [(1.0 + inflation) ** y for y in years]  # y is 1..50
+    real_balances = [b / d for b, d in zip(balances, deflator)]
+
+    def discount_snapshot(snap_dict, t_years):
+        if snap_dict is None:
+            return None
+        return {k: v / ((1.0 + inflation) ** t_years) for k, v in snap_dict.items()}
+
+    real_snapshot_at_ret = discount_snapshot(snapshot_at_ret, years_until_ret)
+    real_snapshot_full_fi = discount_snapshot(snapshot_full_fi, full_fi_first_year) if full_fi_first_year else None
+    real_snapshot_5yr  = discount_snapshot(snapshot_5yr, 5)  if snapshot_5yr  else None
+    real_snapshot_10yr = discount_snapshot(snapshot_10yr, 10) if snapshot_10yr else None
+
+    # Save to session state
     st.session_state["sim"] = dict(
         # cash/tax
         agi=agi, taxable_income=taxable_income, federal_tax=federal_tax, state_tax=state_tax,
@@ -413,17 +445,20 @@ if clicked:
         total_savings=total_savings, employer_sum=employer_sum, post_tax_savings=post_tax_savings,
         disposable_income=disposable_income, pension_contribution=pension_contribution,
         warn_msgs=warn_msgs,
-        # portfolio
-        portfolio=portfolio, annual_contribs=annual_contribs,
-        years=years, balances=balances,
-        full_fi_target=full_fi_target, lean_fi_target=lean_fi_target,
-        chubby_fi_target=chubby_fi_target, fat_fi_target=fat_fi_target,
-        barista_fi_target=barista_fi_target, flamingo_fi_target=flamingo_fi_target,
-        years_until_ret=years_until_ret,
-        snapshot_at_ret=snapshot_at_ret, snapshot_full_fi=snapshot_full_fi,
-        full_fi_first_year=full_fi_first_year,
-        milestone_defs=milestone_defs, milestone_years=milestone_years,
-        swr_percent=swr_percent, annual_expenses=annual_expenses
+        # portfolio & series
+        years=years, balances=balances, real_balances=real_balances,
+        # targets (real baseline)
+        base_full_fi=base_full_fi, base_lean_fi=base_lean_fi, base_chubby_fi=base_chubby_fi, base_fat_fi=base_fat_fi,
+        base_barista_fi=base_barista_fi, base_flamingo_fi=base_flamingo_fi, coast_fi_target=coast_fi_target,
+        # snapshots nominal + real
+        snapshot_at_ret=snapshot_at_ret, snapshot_full_fi=snapshot_full_fi, snapshot_5yr=snapshot_5yr, snapshot_10yr=snapshot_10yr,
+        real_snapshot_at_ret=real_snapshot_at_ret, real_snapshot_full_fi=real_snapshot_full_fi,
+        real_snapshot_5yr=real_snapshot_5yr, real_snapshot_10yr=real_snapshot_10yr,
+        full_fi_first_year=full_fi_first_year, milestone_defs=milestone_defs, milestone_years=milestone_years,
+        # meta
+        swr_percent=swr_percent, swr=swr, annual_expenses=annual_expenses,
+        years_until_ret=years_until_ret, inflation=inflation, inflation_percent=inflation_percent,
+        expense_inflation_on=expense_inflation_on
     )
 
 # =========================
@@ -434,7 +469,7 @@ sim = st.session_state["sim"]
 if not sim:
     st.info("Set your inputs and click **🚀 Run / Update FIRE Simulation**.")
 else:
-    # Show warnings
+    # Warnings
     for msg in sim["warn_msgs"]:
         st.warning(msg)
 
@@ -468,16 +503,9 @@ else:
             money(sim["disposable_income"])
         ]
     })
-    st.dataframe(fire_summary)
+    st.dataframe(fire_summary, use_container_width=True)
 
-    # Assumed returns (debug)
-    st.caption("Assumed per-account returns (after normalization)")
-    st.dataframe(pd.DataFrame(
-        [{"Account": a, "Assumed Return": pct(sim["portfolio"][a]['return'])}
-         for a in sorted(sim["portfolio"].keys())]
-    ), use_container_width=True)
-
-    # Milestones table ordered by time
+    # Milestones ordered by time
     ordered = []
     for name, _ in sim["milestone_defs"]:
         yr = sim["milestone_years"][name]
@@ -493,26 +521,48 @@ else:
     st.subheader(f"🏁 FI Milestones (SWR = {sim['swr_percent']:.1f}%) — ordered by time to achieve")
     st.table(pd.DataFrame([(n, d) for n, d, _ in ordered], columns=["Milestone", "Time to Achieve"]))
 
-    # Milestone explanations
-    st.subheader("📖 What the Milestones Mean (typical progression)")
-    st.markdown(f"""
-- **Coast FI** *(meta milestone)*: Invested today grows to your **Full FI** target by ~**{sim['years_until_ret']} years** with **no additional contributions**.
-- **Barista FI**: Portfolio supports **~50%** of your annual expenses at your SWR; remaining ~50% from part-time/lower-pay work.
-- **Flamingo FI**: Build **~50%** of your Full FI number, then **downshift**—let compounding finish the job.
-- **Lean FI**: Portfolio supports **75%** of expenses.
-- **Full FI**: Portfolio supports **100%** of expenses.
-- **Chubby FI**: Comfortable middle-ground—**~120%** of expenses.
-- **Fat FI**: Portfolio supports **150%** of expenses.
-""")
-
-    # Growth chart
+    # ---- Growth chart with Nominal vs Real & FI guide-lines ----
     st.subheader("📈 Investment Growth Over Time")
+    chart_units = st.radio(
+        "Chart units",
+        ["Nominal ($ at future dates)", "Real (today's $)"],
+        index=1,  # default Real
+        horizontal=True,
+        key="chart_units_mode"
+    )
+
+    use_real = (chart_units == "Real (today's $)")
+    series = sim["real_balances"] if use_real else sim["balances"]
+
+    # Which horizon are we visually targeting for nominal FI guide-lines?
+    # Use the currently selected snapshot horizon (set below). For now, default to retirement horizon.
+    guide_year = sim["years_until_ret"]
+
     fig2, ax2 = plt.subplots()
-    years, balances = sim["years"], sim["balances"]
-    if years and balances:
-        ax2.plot(years, balances, label="Projected Portfolio Value")
+    years = sim["years"]
+    if years and series:
+        ax2.plot(years, series, label="Projected Portfolio Value")
+
+        # Choose FI guide-lines (real baseline vs nominal with optional expense inflation)
+        if use_real:
+            full_line   = sim["base_full_fi"]
+            chubby_line = sim["base_chubby_fi"]
+            lean_line   = sim["base_lean_fi"]
+            caption_tail = " (real, today's $)"
+        else:
+            if sim["expense_inflation_on"]:
+                inflated_exp = inflate_expense(sim["annual_expenses"], sim["inflation"], guide_year)
+            else:
+                inflated_exp = sim["annual_expenses"]
+            full_line   = inflated_exp / sim["swr"]
+            chubby_line = (inflated_exp * 1.20) / sim["swr"]
+            lean_line   = (inflated_exp * 0.75) / sim["swr"]
+            caption_tail = f" (nominal, horizon ≈ {guide_year}y; expense inflation {'ON' if sim['expense_inflation_on'] else 'OFF'})"
+
+        # Annotate Full FI year
         if sim["full_fi_first_year"] is not None and 1 <= sim["full_fi_first_year"] <= len(years):
-            x = sim["full_fi_first_year"]; y = balances[x - 1]
+            x = sim["full_fi_first_year"]
+            y = (sim["real_balances"][x-1] if use_real else sim["balances"][x-1])
             ax2.axvline(x, linestyle=':', alpha=0.6)
             ax2.scatter([x], [y], zorder=5)
             right_side = x < (len(years) * 0.7)
@@ -524,35 +574,77 @@ else:
                 arrowprops=dict(arrowstyle="->", lw=1), fontsize=9,
                 ha="left" if right_side else "right"
             )
-        ax2.axhline(y=sim["full_fi_target"], linestyle='--', label=f'Full FI ({money(sim["full_fi_target"])})')
-        ax2.axhline(y=sim["chubby_fi_target"], linestyle=':', label=f'Chubby FI ({money(sim["chubby_fi_target"])})')
-        ax2.axhline(y=sim["lean_fi_target"], linestyle='-.', label=f'Lean FI ({money(sim["lean_fi_target"])})')
+
+        # Guide lines
+        ax2.axhline(y=full_line,   linestyle='--', label=f'Full FI {caption_tail}')
+        ax2.axhline(y=chubby_line, linestyle=':',  label=f'Chubby FI {caption_tail}')
+        ax2.axhline(y=lean_line,   linestyle='-.', label=f'Lean FI {caption_tail}')
+
+        # Vertical markers at 5y & 10y
+        for h, label in [(5, "5 yrs"), (10, "10 yrs")]:
+            if years and h <= len(years):
+                ax2.axvline(h, linestyle=':', alpha=0.35)
+                y_for_text = series[h-1] * 0.02 if series[h-1] > 0 else full_line * 0.02
+                ax2.annotate(label, xy=(h, y_for_text), xytext=(h+0.2, y_for_text*1.05), fontsize=8)
+
         ax2.yaxis.set_major_formatter(
             ticker.FuncFormatter(lambda x, _: f'${int(x/1000)}k' if x < 1_000_000 else f'${x/1_000_000:.1f}M')
         )
-        ax2.set_xlabel("Years"); ax2.set_ylabel("Portfolio Value ($)")
+        ax2.set_xlabel("Years")
+        ax2.set_ylabel("Portfolio Value ($)")
         ax2.legend()
     else:
         ax2.text(0.5, 0.5, "No data to plot", ha='center', va='center')
     st.pyplot(fig2)
 
-    # Snapshot selector (persisted; won’t reset sim)
+    # -----------------------------
+    # Snapshot selector (persisted)
+    # -----------------------------
     default_label = f"Retirement horizon (~{sim['years_until_ret']} years)"
     fi_label = "First year you reach Full FI"
+    five_label = "5 years from today"
+    ten_label  = "10 years from today"
+
+    options = [default_label, fi_label]
+    if sim.get("snapshot_5yr"):
+        options.insert(0, five_label)
+    if sim.get("snapshot_10yr"):
+        insert_pos = 1 if five_label in options else 0
+        options.insert(insert_pos, ten_label)
+
     snapshot_choice = st.radio(
         "Balance snapshot at",
-        [default_label, fi_label],
-        index=0, key="snapshot_choice",
+        options,
+        index=options.index(default_label) if default_label in options else 0,
+        key="snapshot_choice",
         help="Flip views freely — results are cached so the app won’t reset."
     )
-    if snapshot_choice == fi_label and sim["snapshot_full_fi"] is not None:
-        snapshot_to_use = sim["snapshot_full_fi"]; snapshot_year_text = f"(year {sim['full_fi_first_year']})"
-    else:
-        if snapshot_choice == fi_label and sim["snapshot_full_fi"] is None:
-            st.info("You do not reach Full FI within the 50-year simulation. Showing retirement-horizon snapshot instead.")
-        snapshot_to_use = sim["snapshot_at_ret"]; snapshot_year_text = f"(~{sim['years_until_ret']} years)"
 
-    # ---- Buckets
+    # Pick nominal snapshot & set chart guide horizon to match your selection
+    if snapshot_choice == five_label and sim.get("snapshot_5yr"):
+        snapshot_to_use = sim["snapshot_5yr"]; snapshot_year_text = "(~5 years)"; guide_year = 5
+    elif snapshot_choice == ten_label and sim.get("snapshot_10yr"):
+        snapshot_to_use = sim["snapshot_10yr"]; snapshot_year_text = "(~10 years)"; guide_year = 10
+    elif snapshot_choice == fi_label and sim.get("snapshot_full_fi") is not None:
+        snapshot_to_use = sim["snapshot_full_fi"]; snapshot_year_text = f"(year {sim['full_fi_first_year']})"; guide_year = sim["full_fi_first_year"] or sim["years_until_ret"]
+    else:
+        if snapshot_choice == fi_label and sim.get("snapshot_full_fi") is None:
+            st.info("You do not reach Full FI within the 50-year simulation. Showing retirement-horizon snapshot instead.")
+        snapshot_to_use = sim["snapshot_at_ret"]; snapshot_year_text = f"(~{sim['years_until_ret']} years)"; guide_year = sim["years_until_ret"]
+
+    # Pick matching real snapshot for the same horizon
+    if snapshot_choice == five_label and sim.get("real_snapshot_5yr"):
+        real_snapshot = sim["real_snapshot_5yr"]
+    elif snapshot_choice == ten_label and sim.get("real_snapshot_10yr"):
+        real_snapshot = sim["real_snapshot_10yr"]
+    elif snapshot_choice == fi_label and sim.get("real_snapshot_full_fi") is not None:
+        real_snapshot = sim["real_snapshot_full_fi"]
+    else:
+        real_snapshot = sim["real_snapshot_at_ret"]
+
+    # =========================
+    # ---- Buckets (Nominal & Real) ----
+    # =========================
     st.subheader(f"🏦 Projected Balances by Tax Bucket {snapshot_year_text}")
 
     def tax_bucket(acct_name: str) -> str:
@@ -575,21 +667,40 @@ else:
     for acct, bal in snapshot_to_use.items():
         b = tax_bucket(acct)
         bucket_sums[b] = bucket_sums.get(b, 0.0) + bal
-    bucket_rows = [{"Bucket": b, "Projected Balance": money(v)} for b, v in bucket_sums.items()]
-    bucket_df = pd.DataFrame(bucket_rows).sort_values("Bucket")
-    st.dataframe(bucket_df, use_container_width=True)
+
+    bucket_sums_real = {}
+    for acct, bal in real_snapshot.items():
+        b = tax_bucket(acct)
+        bucket_sums_real[b] = bucket_sums_real.get(b, 0.0) + bal
+
+    bucket_rows = []
+    for b in sorted(set(bucket_sums) | set(bucket_sums_real)):
+        bucket_rows.append({
+            "Bucket": b,
+            "Projected Balance (Nominal)": money(bucket_sums.get(b, 0.0)),
+            "Projected Balance (Real)":    money(bucket_sums_real.get(b, 0.0)),
+        })
+    st.dataframe(pd.DataFrame(bucket_rows), use_container_width=True)
 
     st.subheader(f"📋 Per-Account Balances {snapshot_year_text}")
     acct_rows = []
-    for acct, bal in sorted(snapshot_to_use.items()):
-        acct_rows.append({"Account": acct, "Bucket": tax_bucket(acct), "Projected Balance": money(bal)})
+    for acct in sorted(set(snapshot_to_use.keys()) | set(real_snapshot.keys())):
+        acct_rows.append({
+            "Account": acct,
+            "Bucket": tax_bucket(acct),
+            "Nominal": money(snapshot_to_use.get(acct, 0.0)),
+            "Real":    money(real_snapshot.get(acct, 0.0)),
+        })
     st.dataframe(pd.DataFrame(acct_rows), use_container_width=True)
 
-    # Allocation chart (optional)
+    # =========================
+    # ---- Contribution Impact ----
+    # =========================
     st.subheader("🚀 Contribution Impact Summary")
     baseline_pension_contribution = sim["pension_contribution"]
     baseline_agi = gross_salary - baseline_pension_contribution
-    baseline_taxable_income = max(baseline_agi - (STANDARD_DEDUCTION_2025_SINGLE if filing_status=="Single" else STANDARD_DEDUCTION_2025_MARRIED), 0)
+    std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status == "Single" else STANDARD_DEDUCTION_2025_MARRIED
+    baseline_taxable_income = max(baseline_agi - std_ded, 0)
     baseline_federal_tax = calculate_tax(baseline_taxable_income, federal_brackets)
     baseline_state_tax = calculate_tax(baseline_taxable_income, VIRGINIA_BRACKETS_2025)
     baseline_total_tax = baseline_federal_tax + baseline_state_tax
