@@ -15,40 +15,106 @@ except Exception:
 # Page & Session
 # ----------------------------
 st.set_page_config(
-    page_title="🔥 FIRE Tax + FI Planner 2025",
+    page_title="FIRE Tax + FI Planner",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Mobile-friendly CSS
+# Enhanced CSS for a cleaner, more modern look
 st.markdown("""
 <style>
-.block-container { padding-top: 0.6rem; padding-bottom: 0.6rem; }
+/* Tighter top/bottom padding */
+.block-container { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+
+/* Mobile-friendly tweaks */
 @media (max-width: 640px) {
   .stDataFrame { font-size: 0.9rem; }
-  .stMetric { font-size: 0.9rem; }
+  .stMetric    { font-size: 0.9rem; }
 }
-[data-baseweb="radio"] label, [data-baseweb="checkbox"] label { line-height: 1.2rem; }
+
+/* Radio / checkbox labels */
+[data-baseweb="radio"] label,
+[data-baseweb="checkbox"] label { line-height: 1.2rem; }
+
+/* Metric cards: subtle background, rounded */
+[data-testid="stMetric"] {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border: 1px solid #e2e8f0;
+    border-radius: 0.6rem;
+    padding: 0.7rem 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+[data-testid="stMetric"] label { font-size: 0.78rem; color: #64748b; }
+[data-testid="stMetric"] [data-testid="stMetricValue"] { font-weight: 700; }
+
+/* Warning banner refinement */
+.stAlert { border-radius: 0.5rem; }
+
+/* Sidebar header spacing */
+.stSidebar [data-testid="stSidebarNav"] { padding-top: 1rem; }
+
+/* Year toggle pill styling */
+div[data-testid="stRadio"] > div { gap: 0.3rem; }
 </style>
 """, unsafe_allow_html=True)
 
 if "sim" not in st.session_state:
     st.session_state["sim"] = None
 
-# =========================
-# ---- Tax Settings ----
-# =========================
-FEDERAL_BRACKETS_2025_SINGLE = [
-    (0, 0.10), (11925, 0.12), (48475, 0.22),
-    (103350, 0.24), (197300, 0.32), (250525, 0.35), (626350, 0.37),
-]
-FEDERAL_BRACKETS_2025_MARRIED = [
-    (0, 0.10), (23850, 0.12), (96950, 0.22),
-    (206700, 0.24), (394600, 0.32), (501050, 0.35), (752600, 0.37),
-]
-VIRGINIA_BRACKETS_2025 = [(0, 0.02), (3000, 0.03), (5000, 0.05), (17000, 0.0575)]
-STANDARD_DEDUCTION_2025_SINGLE = 15000
-STANDARD_DEDUCTION_2025_MARRIED = 30000
+# =====================================================
+# ---- Multi-Year Tax Data (2025 & 2026) ----
+# =====================================================
+
+TAX_DATA = {
+    2025: {
+        "federal_brackets_single": [
+            (0, 0.10), (11925, 0.12), (48475, 0.22),
+            (103350, 0.24), (197300, 0.32), (250525, 0.35), (626350, 0.37),
+        ],
+        "federal_brackets_married": [
+            (0, 0.10), (23850, 0.12), (96950, 0.22),
+            (206700, 0.24), (394600, 0.32), (501050, 0.35), (752600, 0.37),
+        ],
+        "virginia_brackets": [
+            (0, 0.02), (3000, 0.03), (5000, 0.05), (17000, 0.0575),
+        ],
+        "standard_deduction_single": 15000,
+        "standard_deduction_married": 30000,
+        "limits": {
+            "IRA (Traditional/Roth) combined": 7000,
+            "457(b) employee deferral": 23500,
+            "403(b) employee deferral": 23500,
+            "HSA (family)": 8550,
+            "FSA (health)": 3300,
+            "415(c) overall DC limit": 70000,
+            "529 (VA deduction cap)": 4000,
+        },
+    },
+    2026: {
+        "federal_brackets_single": [
+            (0, 0.10), (12400, 0.12), (50400, 0.22),
+            (105700, 0.24), (201775, 0.32), (256225, 0.35), (640600, 0.37),
+        ],
+        "federal_brackets_married": [
+            (0, 0.10), (24800, 0.12), (100800, 0.22),
+            (211400, 0.24), (403550, 0.32), (512450, 0.35), (768700, 0.37),
+        ],
+        "virginia_brackets": [
+            (0, 0.02), (3000, 0.03), (5000, 0.05), (17000, 0.0575),
+        ],
+        "standard_deduction_single": 16100,
+        "standard_deduction_married": 32200,
+        "limits": {
+            "IRA (Traditional/Roth) combined": 7500,
+            "457(b) employee deferral": 24500,
+            "403(b) employee deferral": 24500,
+            "HSA (family)": 8750,
+            "FSA (health)": 3400,
+            "415(c) overall DC limit": 73500,
+            "529 (VA deduction cap)": 4000,
+        },
+    },
+}
 
 # =========================
 # ---- Helpers ----
@@ -96,19 +162,18 @@ def bracket_slices(brackets, taxable):
     n = len(brackets)
     for i, (start, rate) in enumerate(brackets):
         end = brackets[i+1][0] if i+1 < n else float('inf')
-        if taxable <= start: break
+        taxable_income = taxable
         span = min(taxable_income, end) - start if (taxable_income := taxable) else 0
         tax  = max(0.0, span * rate)
         rows.append({"from": start, "to": min(taxable, end), "rate": rate, "span": span, "tax": tax})
     return rows
 
-def recompute_tax_with_override(base_gross, pension_contrib, filing, contributions, override_key=None, override_value=None):
+def recompute_tax_with_override(base_gross, pension_contrib, filing, contributions,
+                                 fed_br, va_br, std_ded, va_529_cap,
+                                 override_key=None, override_value=None):
     contribs = dict(contributions)
     if override_key is not None:
         contribs[override_key] = override_value
-
-    std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing == "Single" else STANDARD_DEDUCTION_2025_MARRIED
-    fed_br = FEDERAL_BRACKETS_2025_SINGLE if filing == "Single" else FEDERAL_BRACKETS_2025_MARRIED
 
     agi = base_gross - pension_contrib
     agi_reducing_accounts = [
@@ -118,26 +183,65 @@ def recompute_tax_with_override(base_gross, pension_contrib, filing, contributio
     ]
     for acct in agi_reducing_accounts:
         agi -= contribs.get(acct, 0)
-    agi -= min(contribs.get("529 Plan", 0), 4000)
+    agi -= min(contribs.get("529 Plan", 0), va_529_cap)
 
     taxable = max(agi - std_ded, 0)
     fed = calculate_tax(taxable, fed_br)
-    sta = calculate_tax(taxable, VIRGINIA_BRACKETS_2025)
+    sta = calculate_tax(taxable, va_br)
     return taxable, fed, sta, fed + sta
+
 
 # =========================
 # ---- App ----
 # =========================
-st.title("🔥 FIRE Tax + FI Planner 2025 (Federal + Virginia) 🔥")
 
-with st.expander("Assumptions", expanded=False):
-    st.markdown(
-        "- 2025 **federal** & **Virginia** tax brackets (start-of-bracket).\n"
-        "- Uses the **standard deduction** by filing status.\n"
-        "- Virginia 529 deduction capped at **$4,000**.\n"
-        "- **SWR** drives FI targets (you control the %).\n"
-        "- **Years until retirement = Target age − Current age**.\n"
-        "- Simplified model: ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc."
+# ---- Header with tax year toggle ----
+header_col1, header_col2 = st.columns([3, 1])
+with header_col1:
+    st.title("FIRE Tax + FI Planner (Federal + Virginia)")
+with header_col2:
+    tax_year = st.radio(
+        "Tax Year",
+        options=[2025, 2026],
+        index=0,
+        horizontal=True,
+        help="Switch between CY 2025 and CY 2026 tax brackets, deductions, and contribution limits.",
+    )
+
+# Resolve year-specific data
+yd = TAX_DATA[tax_year]
+fed_brackets_single  = yd["federal_brackets_single"]
+fed_brackets_married = yd["federal_brackets_married"]
+va_brackets          = yd["virginia_brackets"]
+std_ded_single       = yd["standard_deduction_single"]
+std_ded_married      = yd["standard_deduction_married"]
+yr_limits            = yd["limits"]
+va_529_cap           = yr_limits["529 (VA deduction cap)"]
+
+# ---- Quick reference: what changed? ----
+with st.expander(f"What's in the {tax_year} numbers?", expanded=False):
+    ref_col1, ref_col2 = st.columns(2)
+    with ref_col1:
+        st.markdown(f"**Standard Deduction ({tax_year})**")
+        st.markdown(f"- Single: **{money(std_ded_single)}**")
+        st.markdown(f"- MFJ: **{money(std_ded_married)}**")
+        st.markdown(f"\n**Contribution Limits ({tax_year})**")
+        for label, val in yr_limits.items():
+            st.markdown(f"- {label}: **{money(val)}**")
+    with ref_col2:
+        st.markdown(f"**Federal Brackets — Single ({tax_year})**")
+        for start, rate in fed_brackets_single:
+            st.markdown(f"- {money(start)}+: **{pct(rate)}**")
+
+    if tax_year == 2026:
+        st.info(
+            "2026 brackets reflect the **One, Big, Beautiful Bill Act** (OBBBA) which made the TCJA "
+            "structure permanent with enhanced inflation adjustments for the 10% and 12% brackets."
+        )
+
+    st.caption(
+        "Simplified model: ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc. "
+        "Virginia 529 deduction capped at $4,000. SWR drives FI targets."
     )
 
 # ---- Sidebar Inputs ----
@@ -222,17 +326,13 @@ for account, enabled in {**core_accounts, **more_accounts}.items():
             f"{account} Contribution ($)", value=default_val, step=500, key=key
         )
 
-# 2025 limit hints (warnings only)
-with st.sidebar.expander("Contribution limit tips (2025 — edit if needed)"):
-    hints = {
-        "IRA (Traditional/Roth) combined": st.number_input("IRA annual limit ($)", value=7000, step=500, key="hint_ira"),
-        "457(b) employee deferral": st.number_input("457(b) annual limit ($)", value=23500, step=500, key="hint_457"),
-        "403(b) employee deferral": st.number_input("403(b) annual limit ($)", value=23500, step=500, key="hint_403"),
-        "HSA (family)": st.number_input("HSA annual limit ($)", value=8550, step=50, key="hint_hsa"),
-        "FSA (health)": st.number_input("FSA annual limit ($)", value=3300, step=50, key="hint_fsa"),
-        "415(c) overall DC limit": st.number_input("Overall DC limit (§415c) ($)", value=70000, step=1000, key="hint_415c"),
-        "529 (VA deduction hint)": st.number_input("VA 529 deductible amount used ($)", value=4000, step=500, key="hint_529"),
-    }
+# Year-aware limit hints (warnings only)
+with st.sidebar.expander(f"Contribution limit tips ({tax_year})"):
+    hints = {}
+    for lbl, val in yr_limits.items():
+        hints[lbl] = st.number_input(
+            f"{lbl} ($)", value=val, step=500, key=f"hint_{lbl}_{tax_year}"
+        )
     st.caption("These are non-blocking warnings; catch-ups vary by age & plan.")
 
 # ==============================================
@@ -263,7 +363,7 @@ current_investments = st.sidebar.number_input(
 default_granular_selection = list(DEFAULT_BALANCES.keys())
 
 if granular_mode:
-    st.sidebar.caption("Specify starting balances & returns for selected accounts. Remainder → 'Other Investments'.")
+    st.sidebar.caption("Specify starting balances & returns for selected accounts. Remainder -> 'Other Investments'.")
     chosen_accounts = st.sidebar.multiselect(
         "Accounts with explicit starting balance & return",
         options=ALL_ACCOUNTS,
@@ -309,9 +409,13 @@ else:
 # =========================
 # ---- Run Simulation ----
 # =========================
-clicked = st.sidebar.button("🚀 Run / Update FIRE Simulation")
+clicked = st.sidebar.button("Run / Update FIRE Simulation", type="primary")
 
 if clicked:
+    # Resolve year-specific brackets & deduction
+    std_ded = std_ded_single if filing_status == "Single" else std_ded_married
+    fed_br  = fed_brackets_single if filing_status == "Single" else fed_brackets_married
+
     # Taxes / cash flow
     pension_contribution = gross_salary * pension_percent
     agi = gross_salary - pension_contribution
@@ -323,13 +427,12 @@ if clicked:
     employer_funded_accounts = ["401(a) Employer"]
     for acct in agi_reducing_accounts:
         agi -= contributions.get(acct, 0)
-    va_529_deduction = min(contributions.get("529 Plan", 0), 4000)
+    va_529_deduction = min(contributions.get("529 Plan", 0), va_529_cap)
     agi -= va_529_deduction
 
-    std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status=="Single" else STANDARD_DEDUCTION_2025_MARRIED
     taxable_income = max(agi - std_ded, 0)
-    federal_tax = calculate_tax(taxable_income, FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED)
-    state_tax = calculate_tax(taxable_income, VIRGINIA_BRACKETS_2025)
+    federal_tax = calculate_tax(taxable_income, fed_br)
+    state_tax = calculate_tax(taxable_income, va_brackets)
     total_tax = federal_tax + state_tax
 
     effective_tax_rate = (total_tax / gross_salary) if gross_salary > 0 else 0.0
@@ -341,14 +444,16 @@ if clicked:
     post_tax_savings = total_savings - pre_tax_sum - employer_sum
     disposable_income = after_tax_income - post_tax_savings
 
-    # Warnings
+    # Warnings (year-aware)
     warn_msgs = []
     ira_total = contributions.get("Traditional IRA", 0) + contributions.get("Roth IRA", 0)
-    if ira_total > hints["IRA (Traditional/Roth) combined"]:
-        warn_msgs.append(f"IRA combined {money(ira_total)} > {money(hints['IRA (Traditional/Roth) combined'])}")
+    ira_limit = hints.get("IRA (Traditional/Roth) combined", yr_limits["IRA (Traditional/Roth) combined"])
+    if ira_total > ira_limit:
+        warn_msgs.append(f"IRA combined {money(ira_total)} > {tax_year} limit {money(ira_limit)}")
     def over(a, b, key, label):
         t = contributions.get(a, 0) + contributions.get(b, 0)
-        if t > hints[key]: warn_msgs.append(f"{label} {money(t)} > {money(hints[key])}")
+        lim = hints.get(key, yr_limits.get(key, 999999999))
+        if t > lim: warn_msgs.append(f"{label} {money(t)} > {tax_year} limit {money(lim)}")
     over("457(b) Traditional", "457(b) Roth", "457(b) employee deferral", "457(b)")
     over("403(b) Traditional", "403(b) Roth", "403(b) employee deferral", "403(b)")
     if post_tax_savings > after_tax_income:
@@ -453,6 +558,8 @@ if clicked:
 
     # Save to session state
     st.session_state["sim"] = dict(
+        # year
+        tax_year=tax_year,
         # cash/tax
         agi=agi, taxable_income=taxable_income, federal_tax=federal_tax, state_tax=state_tax,
         total_tax=total_tax, effective_tax_rate=effective_tax_rate, after_tax_income=after_tax_income,
@@ -477,7 +584,9 @@ if clicked:
         # meta
         swr_percent=swr_percent, swr=swr, annual_expenses=annual_expenses,
         years_until_ret=years_until_ret, inflation=inflation, inflation_percent=inflation_percent,
-        expense_inflation_on=expense_inflation_on, sim_until_age=sim_until_age
+        expense_inflation_on=expense_inflation_on, sim_until_age=sim_until_age,
+        # year-specific refs stored for display
+        std_ded=std_ded, fed_br=fed_br, va_br=va_brackets, va_529_cap=va_529_cap,
     )
 
 # =========================
@@ -485,34 +594,45 @@ if clicked:
 # =========================
 sim = st.session_state["sim"]
 if not sim:
-    st.info("Set your inputs and tap **🚀 Run / Update FIRE Simulation**.")
+    st.info("Set your inputs in the sidebar and tap **Run / Update FIRE Simulation**.")
 else:
+    # Show which year the results were computed with
+    sim_ty = sim.get("tax_year", 2025)
+    if sim_ty != tax_year:
+        st.warning(
+            f"Results below were computed using **{sim_ty}** tax data. "
+            f"You've since switched to **{tax_year}**. Hit **Run / Update** to refresh."
+        )
+
     tax_tab, retire_tab = st.tabs(["Tax Planning", "Retirement Planning"])
 
     # ---------- TAX PLANNING ----------
     with tax_tab:
-        st.subheader("📋 Tax Summary")
+        st.subheader(f"Tax Summary ({sim_ty})")
         c1, c2, c3 = st.columns(3)
         c1.metric("AGI", money(sim["agi"]))
         c2.metric("Total Taxes", money(sim["total_tax"]))
         c3.metric("Effective Tax Rate", pct(sim["effective_tax_rate"]))
 
-        c1.metric("After-Tax Income", money(sim["after_tax_income"]))
-        c2.metric("Annual Savings (total)", money(sim["total_savings"]))
-        c3.metric("Disposable ($)", money(sim["disposable_income"]))
+        c4, c5, c6 = st.columns(3)
+        c4.metric("After-Tax Income", money(sim["after_tax_income"]))
+        c5.metric("Annual Savings (total)", money(sim["total_savings"]))
+        c6.metric("Disposable ($)", money(sim["disposable_income"]))
 
         for msg in sim["warn_msgs"]:
             st.warning(msg)
 
         # --- Contribution Impact: cash-flow stacked bars (side-by-side) ---
-        st.subheader("📊 Contribution Impact (cash-flow breakdown)")
+        st.subheader("Contribution Impact (cash-flow breakdown)")
 
-        std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status == "Single" else STANDARD_DEDUCTION_2025_MARRIED
+        sim_std_ded = sim["std_ded"]
+        sim_fed_br  = sim["fed_br"]
+        sim_va_br   = sim["va_br"]
         baseline_pension = sim["pension_contribution"]
         base_agi = gross_salary - baseline_pension
-        base_taxable_income = max(base_agi - std_ded, 0)
-        base_fed = calculate_tax(base_taxable_income, FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED)
-        base_state = calculate_tax(base_taxable_income, VIRGINIA_BRACKETS_2025)
+        base_taxable_income = max(base_agi - sim_std_ded, 0)
+        base_fed = calculate_tax(base_taxable_income, sim_fed_br)
+        base_state = calculate_tax(base_taxable_income, sim_va_br)
         base_tax_total = base_fed + base_state
         base_pre_tax_stack = baseline_pension
         base_post_tax_savings = 0.0
@@ -529,6 +649,10 @@ else:
         with_tax_total = with_fed + with_state
         with_post_tax_savings = sim["post_tax_savings"]
         with_disposable = max(0.0, gross_salary - with_pre_tax_stack - with_tax_total - with_post_tax_savings)
+
+        tax_saved = base_tax_total - with_tax_total
+        if tax_saved > 0:
+            st.success(f"Your contributions save you **{money(tax_saved)}** in taxes vs. no contributions!")
 
         order = [
             "Pre-tax (pension + elective)",
@@ -554,7 +678,7 @@ else:
         if ALT_AVAILABLE:
             chart = (
                 alt.Chart(impact_df)
-                .mark_bar(size=100)  # wider bars
+                .mark_bar(size=100, cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
                 .encode(
                     x=alt.X(
                         "Scenario:N",
@@ -568,11 +692,16 @@ else:
                         stack="zero",
                         axis=alt.Axis(format="~s"),
                     ),
-                    color=alt.Color("Component:N", sort=order, legend=alt.Legend(orient="bottom")),
+                    color=alt.Color(
+                        "Component:N",
+                        sort=order,
+                        legend=alt.Legend(orient="bottom"),
+                        scale=alt.Scale(range=["#6366f1", "#ef4444", "#f97316", "#22c55e", "#3b82f6"]),
+                    ),
                     order=alt.Order("Component:N", sort="ascending"),
                     tooltip=[alt.Tooltip("Scenario:N"), alt.Tooltip("Component:N"), alt.Tooltip("Amount:Q", format="$,.0f")],
                 )
-                .properties(height=340)  # taller
+                .properties(height=360)
                 .configure_axis(labelFontSize=12, titleFontSize=12)
             )
             st.altair_chart(chart, use_container_width=True)
@@ -595,13 +724,10 @@ else:
             ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2)
             st.pyplot(fig, clear_figure=True)
 
-        # --- Marginal rates & bracket viz (collapsible) ---
+        # --- Marginal rates & bracket viz ---
         with st.expander("Bracket visualizer & marginal rates", expanded=False):
-            fed_marg = marginal_rate_for(
-                FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED,
-                sim["taxable_income"]
-            )
-            va_marg  = marginal_rate_for(VIRGINIA_BRACKETS_2025, sim["taxable_income"])
+            fed_marg = marginal_rate_for(sim_fed_br, sim["taxable_income"])
+            va_marg  = marginal_rate_for(sim_va_br, sim["taxable_income"])
             combined_simple = fed_marg + va_marg
 
             c1, c2, c3 = st.columns(3)
@@ -609,11 +735,8 @@ else:
             c2.metric("Virginia marginal rate", pct(va_marg))
             c3.metric("Combined (simple)", pct(combined_simple))
 
-            fed_slices = bracket_slices(
-                FEDERAL_BRACKETS_2025_SINGLE if filing_status=="Single" else FEDERAL_BRACKETS_2025_MARRIED,
-                sim["taxable_income"]
-            )
-            va_slices  = bracket_slices(VIRGINIA_BRACKETS_2025, sim["taxable_income"])
+            fed_slices = bracket_slices(sim_fed_br, sim["taxable_income"])
+            va_slices  = bracket_slices(sim_va_br, sim["taxable_income"])
 
             fed_df = pd.DataFrame([{"System":"Federal","Bracket Start": r["from"], "Span": r["span"], "Tax": r["tax"], "Rate": r["rate"]} for r in fed_slices])
             va_df  = pd.DataFrame([{"System":"Virginia","Bracket Start": r["from"], "Span": r["span"], "Tax": r["tax"], "Rate": r["rate"]} for r in va_slices])
@@ -622,7 +745,7 @@ else:
             if ALT_AVAILABLE and len(stack_df):
                 chart = (
                     alt.Chart(stack_df)
-                      .mark_bar()
+                      .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
                       .encode(
                           x=alt.X("Bracket Start:Q", title="Taxable income slice start ($)", axis=alt.Axis(format="~s")),
                           y=alt.Y("Span:Q", title="Amount taxed in slice ($)", axis=alt.Axis(format="~s")),
@@ -642,30 +765,29 @@ else:
             else:
                 st.dataframe(stack_df, use_container_width=True)
 
-        # --- Waterfall Gross → AGI → Taxable (collapsible) ---
-        with st.expander("Income path: Gross → AGI → Taxable", expanded=False):
+        # --- Waterfall Gross -> AGI -> Taxable ---
+        with st.expander("Income path: Gross -> AGI -> Taxable", expanded=False):
             gross = gross_salary
             pension = sim["pension_contribution"]
             agi_reductions = sum(contributions.get(a,0) for a in [
                 "403(b) Traditional","457(b) Traditional","401(a) Employee","Solo 401(k) Employee",
                 "SEP IRA","SIMPLE IRA","Traditional IRA","HSA","FSA"
-            ]) + min(contributions.get("529 Plan",0), 4000)
-            std_ded = STANDARD_DEDUCTION_2025_SINGLE if filing_status=="Single" else STANDARD_DEDUCTION_2025_MARRIED
+            ]) + min(contributions.get("529 Plan",0), sim["va_529_cap"])
 
             wf = pd.DataFrame([
                 {"Step":"Gross salary","Amount": gross},
-                {"Step":"− Pension","Amount": -pension},
-                {"Step":"− AGI reductions","Amount": -agi_reductions},
+                {"Step":"- Pension","Amount": -pension},
+                {"Step":"- AGI reductions","Amount": -agi_reductions},
                 {"Step":"= AGI","Amount": gross - pension - agi_reductions},
-                {"Step":"− Standard deduction","Amount": -std_ded},
+                {"Step":"- Standard deduction","Amount": -sim_std_ded},
                 {"Step":"= Taxable income","Amount": sim["taxable_income"]},
             ])
 
             if ALT_AVAILABLE:
                 wf["idx"] = range(len(wf))
-                bars = alt.Chart(wf).mark_bar().encode(
+                bars = alt.Chart(wf).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
                     x=alt.X("idx:N", title=None, axis=alt.Axis(labels=False)),
-                    y=alt.Y("Amount:Q", title="Δ amount ($)", axis=alt.Axis(format="~s")),
+                    y=alt.Y("Amount:Q", title="Amount ($)", axis=alt.Axis(format="~s")),
                     color=alt.Color("Amount:Q", legend=None, scale=alt.Scale(range=["#fca5a5","#93c5fd"])),
                     tooltip=[alt.Tooltip("Step:N"), alt.Tooltip("Amount:Q", format="$,.0f")]
                 ).properties(height=220)
@@ -691,6 +813,10 @@ else:
                     pension_contrib=pension,
                     filing=filing_status,
                     contributions=contributions,
+                    fed_br=sim_fed_br,
+                    va_br=sim_va_br,
+                    std_ded=sim_std_ded,
+                    va_529_cap=sim["va_529_cap"],
                     override_key=acct,
                     override_value=0.0
                 )
@@ -706,9 +832,53 @@ else:
             else:
                 st.info("No AGI-reducing contributions detected for this analysis.")
 
+        # --- Year-over-year bracket comparison ---
+        with st.expander("Compare 2025 vs 2026 brackets (side-by-side)", expanded=False):
+            compare_filing = "Single" if filing_status == "Single" else "Married"
+            br_key = f"federal_brackets_{'single' if compare_filing == 'Single' else 'married'}"
+            ded_key = f"standard_deduction_{'single' if compare_filing == 'Single' else 'married'}"
+
+            cmp_rows = []
+            brackets_2025 = TAX_DATA[2025][br_key]
+            brackets_2026 = TAX_DATA[2026][br_key]
+            for i in range(len(brackets_2025)):
+                start_25, rate = brackets_2025[i]
+                start_26, _    = brackets_2026[i]
+                diff = start_26 - start_25
+                cmp_rows.append({
+                    "Rate": pct(rate),
+                    "2025 Starts At": money(start_25),
+                    "2026 Starts At": money(start_26),
+                    "Change": f"+{money(diff)}" if diff >= 0 else money(diff),
+                })
+            st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
+
+            ded_25 = TAX_DATA[2025][ded_key]
+            ded_26 = TAX_DATA[2026][ded_key]
+            st.markdown(
+                f"**Standard Deduction** ({compare_filing}): "
+                f"{money(ded_25)} (2025) -> {money(ded_26)} (2026)  |  "
+                f"Change: **+{money(ded_26 - ded_25)}**"
+            )
+
+            # Contribution limit comparison
+            st.markdown("**Contribution Limits Comparison**")
+            lim_rows = []
+            for lbl in TAX_DATA[2025]["limits"]:
+                v25 = TAX_DATA[2025]["limits"][lbl]
+                v26 = TAX_DATA[2026]["limits"][lbl]
+                diff = v26 - v25
+                lim_rows.append({
+                    "Limit": lbl,
+                    "2025": money(v25),
+                    "2026": money(v26),
+                    "Change": f"+{money(diff)}" if diff >= 0 else money(diff),
+                })
+            st.dataframe(pd.DataFrame(lim_rows), use_container_width=True, hide_index=True)
+
     # ---------- RETIREMENT PLANNING ----------
     with retire_tab:
-        st.subheader("🏁 FI Milestones (ordered by time)")
+        st.subheader("FI Milestones (ordered by time)")
         ordered = []
         ordered_names = [
             "Coast FI",
@@ -743,7 +913,7 @@ else:
 """)
 
         # ---- Growth chart ----
-        st.subheader("📈 Investment Growth Over Time")
+        st.subheader("Investment Growth Over Time")
         chart_units = st.radio(
             "Chart units", ["Nominal ($ at future dates)", "Real (today's $)"],
             index=1, horizontal=True, key="chart_units_mode"
@@ -767,15 +937,15 @@ else:
 
         if ALT_AVAILABLE and len(main_df) > 0:
             y_scale = alt.Scale(type='log') if logy else alt.Scale()
-            base = alt.Chart(main_df).mark_line().encode(
+            base = alt.Chart(main_df).mark_line(strokeWidth=2.5).encode(
                 x=alt.X("Year:Q", title="Years from today", scale=alt.Scale(domain=(0, sim['sim_years']))),
                 y=alt.Y(f"{y_field}:Q", title="Portfolio Value ($)", scale=y_scale, axis=alt.Axis(format="~s")),
                 tooltip=[alt.Tooltip("Year:Q"), alt.Tooltip(f"{y_field}:Q", title="Value", format="$.2s")]
-            ).properties(height=340).interactive()
+            ).properties(height=360).interactive()
 
             layers = []
 
-            # Shading 0–5y and 5–10y
+            # Shading 0-5y and 5-10y
             shade_rows = []
             if sim["sim_years"] >= 5:  shade_rows.append({"x0": 0, "x1": 5})
             if sim["sim_years"] >= 10: shade_rows.append({"x0": 5, "x1": 10})
@@ -783,13 +953,13 @@ else:
                 shade_df = pd.DataFrame(shade_rows)
                 shades = alt.Chart(shade_df).mark_rect(opacity=0.08).encode(
                     x="x0:Q", x2="x1:Q", y=alt.value(0), y2=alt.value(1),
-                ).properties(height=340)
+                ).properties(height=360)
                 layers.append(shades)
 
             # Main line
             layers.append(base)
 
-            # --- Milestone markers: colorful dots + legend (optional labels) ---
+            # --- Milestone markers ---
             if show_markers and "milestone_eta" in sim:
                 names_ordered = ordered_names
                 mdata = []
@@ -814,7 +984,7 @@ else:
                         help="Dots always show tooltips; turn labels on if you want text."
                     )
 
-                    points = alt.Chart(mdf).mark_point(size=80, filled=True).encode(
+                    points = alt.Chart(mdf).mark_point(size=90, filled=True).encode(
                         x="Year:Q",
                         y=alt.Y("Value:Q", scale=y_scale),
                         color=alt.Color("Milestone:N", legend=alt.Legend(title="Milestones", orient="bottom-left")),
@@ -891,7 +1061,7 @@ else:
                     tooltip=[alt.Tooltip("Year:Q"),
                              alt.Tooltip("Account:N"),
                              alt.Tooltip("sum(Amount):Q", title="Amount", format="$.2s")]
-                ).properties(height=340).interactive()
+                ).properties(height=360).interactive()
 
                 st.caption("Per-account composition")
                 st.altair_chart(area, use_container_width=True)
@@ -926,7 +1096,7 @@ else:
             st.pyplot(fig2)
 
         # ---- Snapshots & Buckets ----
-        st.subheader("📌 Snapshot & Buckets")
+        st.subheader("Snapshot & Buckets")
 
         # Segmented control (with radio fallback) for phone-friendly selection
         labels_map = {
@@ -1014,7 +1184,7 @@ else:
             st.dataframe(pd.DataFrame(acct_rows), use_container_width=True)
 
         # ---- Total Assets Summary (Nominal vs Real) ----
-        st.subheader("🧮 Total Assets Summary")
+        st.subheader("Total Assets Summary")
         total_nominal = sum(snapshot_to_use.values())
         total_real = sum(real_snapshot.values())
         c1, c2 = st.columns(2)
@@ -1023,15 +1193,16 @@ else:
 
         if ALT_AVAILABLE:
             sum_df = pd.DataFrame({"Type": ["Nominal", "Real"], "Amount": [total_nominal, total_real]})
-            bar = alt.Chart(sum_df).mark_bar().encode(
+            bar = alt.Chart(sum_df).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
                 x=alt.X("Type:N", title=""),
                 y=alt.Y("Amount:Q", title="Total", axis=alt.Axis(format="~s")),
+                color=alt.Color("Type:N", scale=alt.Scale(range=["#6366f1", "#22c55e"]), legend=None),
                 tooltip=[alt.Tooltip("Type:N"), alt.Tooltip("Amount:Q", title="Total", format="$.2s")]
             ).properties(height=220)
             st.altair_chart(bar, use_container_width=True)
 
         # ---- Income you could draw from the portfolio ----
-        st.subheader("💸 Income You Could Draw")
+        st.subheader("Income You Could Draw")
         st.caption("Pick withdrawal rates to preview sustainable income from this snapshot.")
 
         wrate_options = [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
@@ -1041,7 +1212,7 @@ else:
             "Withdrawal rates",
             options=wrate_options,
             default=default_wrates,
-            help="All results shown for both Nominal and Real (today’s $)."
+            help="All results shown for both Nominal and Real (today's $)."
         )
 
         if wrates:
