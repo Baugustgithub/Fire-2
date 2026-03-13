@@ -20,41 +20,131 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Enhanced CSS for a cleaner, more modern look
+# Enhanced CSS for a modern, polished look
 st.markdown("""
 <style>
-/* Tighter top/bottom padding */
-.block-container { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+/* ---- Global ---- */
+.block-container { padding-top: 0.4rem; padding-bottom: 0.5rem; }
 
-/* Mobile-friendly tweaks */
 @media (max-width: 640px) {
   .stDataFrame { font-size: 0.9rem; }
   .stMetric    { font-size: 0.9rem; }
 }
 
-/* Radio / checkbox labels */
 [data-baseweb="radio"] label,
 [data-baseweb="checkbox"] label { line-height: 1.2rem; }
 
-/* Metric cards: subtle background, rounded */
+/* ---- Metric cards ---- */
 [data-testid="stMetric"] {
-    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-    border: 1px solid #e2e8f0;
-    border-radius: 0.6rem;
-    padding: 0.7rem 1rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
+    border: 1px solid #c7d2fe;
+    border-radius: 0.75rem;
+    padding: 0.75rem 1rem;
+    box-shadow: 0 2px 8px rgba(99,102,241,0.08);
+    transition: box-shadow 0.2s ease;
 }
-[data-testid="stMetric"] label { font-size: 0.78rem; color: #64748b; }
-[data-testid="stMetric"] [data-testid="stMetricValue"] { font-weight: 700; }
+[data-testid="stMetric"]:hover {
+    box-shadow: 0 4px 14px rgba(99,102,241,0.15);
+}
+[data-testid="stMetric"] label { font-size: 0.78rem; color: #64748b; font-weight: 500; }
+[data-testid="stMetric"] [data-testid="stMetricValue"] { font-weight: 700; color: #1e293b; }
 
-/* Warning banner refinement */
-.stAlert { border-radius: 0.5rem; }
+/* ---- Alerts ---- */
+.stAlert { border-radius: 0.6rem; }
 
-/* Sidebar header spacing */
-.stSidebar [data-testid="stSidebarNav"] { padding-top: 1rem; }
+/* ---- Hero banner ---- */
+.hero-banner {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #a855f7 100%);
+    border-radius: 1rem;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1rem;
+    color: white;
+    box-shadow: 0 4px 20px rgba(79,70,229,0.3);
+}
+.hero-banner h1 {
+    margin: 0 0 0.1rem 0;
+    font-size: 1.8rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: white !important;
+}
+.hero-banner .subtitle {
+    font-size: 0.95rem;
+    opacity: 0.85;
+    margin: 0;
+}
 
-/* Year toggle pill styling */
-div[data-testid="stRadio"] > div { gap: 0.3rem; }
+/* ---- Year toggle pills ---- */
+.year-toggle-container {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+.year-toggle-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    opacity: 0.9;
+}
+.year-pill {
+    display: inline-block;
+    padding: 0.45rem 1.4rem;
+    border-radius: 2rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-decoration: none;
+    border: 2px solid rgba(255,255,255,0.4);
+    color: rgba(255,255,255,0.75);
+    background: rgba(255,255,255,0.1);
+}
+.year-pill.active {
+    background: white;
+    color: #4f46e5;
+    border-color: white;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+.year-pill:hover:not(.active) {
+    background: rgba(255,255,255,0.2);
+    border-color: rgba(255,255,255,0.6);
+    color: white;
+}
+
+/* ---- Section dividers ---- */
+.section-divider {
+    height: 3px;
+    background: linear-gradient(90deg, #6366f1, #a855f7, #ec4899);
+    border-radius: 2px;
+    margin: 0.3rem 0 1rem 0;
+    opacity: 0.6;
+}
+
+/* ---- Tab styling ---- */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0.5rem;
+    background: #f8fafc;
+    border-radius: 0.75rem;
+    padding: 0.3rem;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 0.5rem;
+    font-weight: 600;
+    padding: 0.5rem 1.2rem;
+}
+
+/* ---- Expander styling ---- */
+details[data-testid="stExpander"] {
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    overflow: hidden;
+}
+details[data-testid="stExpander"] summary {
+    font-weight: 600;
+}
+
+/* ---- Hide default st.radio for year toggle (we use HTML pills + selectbox fallback) ---- */
+.year-toggle-radio { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -195,18 +285,37 @@ def recompute_tax_with_override(base_gross, pension_contrib, filing, contributio
 # ---- App ----
 # =========================
 
-# ---- Header with tax year toggle ----
-header_col1, header_col2 = st.columns([3, 1])
-with header_col1:
-    st.title("FIRE Tax + FI Planner (Federal + Virginia)")
-with header_col2:
-    tax_year = st.radio(
-        "Tax Year",
+# ---- Tax year state ----
+if "tax_year" not in st.session_state:
+    st.session_state["tax_year"] = 2025
+
+# ---- Hero banner with prominent year toggle ----
+def _pill_class(yr):
+    return "year-pill active" if yr == st.session_state["tax_year"] else "year-pill"
+
+st.markdown(f"""
+<div class="hero-banner">
+    <h1>FIRE Tax + FI Planner</h1>
+    <p class="subtitle">Federal + Virginia  &mdash;  Tax brackets, contribution limits & FI projections</p>
+    <div class="year-toggle-container">
+        <span class="year-toggle-label">TAX YEAR:</span>
+        <span class="{_pill_class(2025)}" id="pill-2025">2025</span>
+        <span class="{_pill_class(2026)}" id="pill-2026">2026</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Actual interactive toggle (streamlit selectbox styled compactly below the banner)
+tcol1, tcol2, tcol3 = st.columns([1, 2, 1])
+with tcol2:
+    tax_year = st.selectbox(
+        "Select Tax Year",
         options=[2025, 2026],
-        index=0,
-        horizontal=True,
-        help="Switch between CY 2025 and CY 2026 tax brackets, deductions, and contribution limits.",
+        index=[2025, 2026].index(st.session_state["tax_year"]),
+        key="tax_year_select",
+        label_visibility="collapsed",
     )
+    st.session_state["tax_year"] = tax_year
 
 # Resolve year-specific data
 yd = TAX_DATA[tax_year]
@@ -218,20 +327,31 @@ std_ded_married      = yd["standard_deduction_married"]
 yr_limits            = yd["limits"]
 va_529_cap           = yr_limits["529 (VA deduction cap)"]
 
-# ---- Quick reference: what changed? ----
-with st.expander(f"What's in the {tax_year} numbers?", expanded=False):
-    ref_col1, ref_col2 = st.columns(2)
+# Gradient divider
+st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+# ---- At-a-glance key numbers for the selected year ----
+st.markdown(f"##### {tax_year} Key Numbers at a Glance")
+g1, g2, g3, g4 = st.columns(4)
+g1.metric("Std. Deduction (Single)", money(std_ded_single))
+g2.metric("Std. Deduction (MFJ)", money(std_ded_married))
+g3.metric("IRA Limit", money(yr_limits["IRA (Traditional/Roth) combined"]))
+g4.metric("401k/403b/457b Limit", money(yr_limits["403(b) employee deferral"]))
+
+with st.expander(f"Full {tax_year} reference: brackets, limits & what changed", expanded=False):
+    ref_col1, ref_col2, ref_col3 = st.columns(3)
     with ref_col1:
-        st.markdown(f"**Standard Deduction ({tax_year})**")
-        st.markdown(f"- Single: **{money(std_ded_single)}**")
-        st.markdown(f"- MFJ: **{money(std_ded_married)}**")
-        st.markdown(f"\n**Contribution Limits ({tax_year})**")
-        for label, val in yr_limits.items():
-            st.markdown(f"- {label}: **{money(val)}**")
-    with ref_col2:
-        st.markdown(f"**Federal Brackets — Single ({tax_year})**")
+        st.markdown(f"**Federal Brackets - Single**")
         for start, rate in fed_brackets_single:
             st.markdown(f"- {money(start)}+: **{pct(rate)}**")
+    with ref_col2:
+        st.markdown(f"**Federal Brackets - MFJ**")
+        for start, rate in fed_brackets_married:
+            st.markdown(f"- {money(start)}+: **{pct(rate)}**")
+    with ref_col3:
+        st.markdown(f"**All Contribution Limits**")
+        for label, val in yr_limits.items():
+            st.markdown(f"- {label}: **{money(val)}**")
 
     if tax_year == 2026:
         st.info(
@@ -409,7 +529,8 @@ else:
 # =========================
 # ---- Run Simulation ----
 # =========================
-clicked = st.sidebar.button("Run / Update FIRE Simulation", type="primary")
+st.sidebar.divider()
+clicked = st.sidebar.button("Run / Update FIRE Simulation", type="primary", use_container_width=True)
 
 if clicked:
     # Resolve year-specific brackets & deduction
@@ -594,21 +715,34 @@ if clicked:
 # =========================
 sim = st.session_state["sim"]
 if not sim:
-    st.info("Set your inputs in the sidebar and tap **Run / Update FIRE Simulation**.")
+    st.markdown("""
+    <div style="text-align:center; padding: 3rem 1rem; color: #64748b;">
+        <p style="font-size: 2.5rem; margin-bottom: 0.5rem;">&#129518;</p>
+        <p style="font-size: 1.1rem; font-weight: 600;">Ready when you are</p>
+        <p style="font-size: 0.9rem;">Open the sidebar, set your inputs, and tap
+        <b>Run / Update FIRE Simulation</b>.</p>
+    </div>
+    """, unsafe_allow_html=True)
 else:
     # Show which year the results were computed with
     sim_ty = sim.get("tax_year", 2025)
     if sim_ty != tax_year:
-        st.warning(
-            f"Results below were computed using **{sim_ty}** tax data. "
-            f"You've since switched to **{tax_year}**. Hit **Run / Update** to refresh."
-        )
+        st.markdown(f"""
+        <div style="background: linear-gradient(90deg, #fef3c7, #fde68a); border-left: 4px solid #f59e0b;
+                    border-radius: 0.5rem; padding: 0.8rem 1.2rem; margin-bottom: 1rem;">
+            <b style="color: #92400e;">Tax year mismatch:</b>
+            <span style="color: #78350f;">
+            Results below use <b>{sim_ty}</b> data but you've selected <b>{tax_year}</b>.
+            Hit <b>Run / Update</b> in the sidebar to refresh.</span>
+        </div>
+        """, unsafe_allow_html=True)
 
     tax_tab, retire_tab = st.tabs(["Tax Planning", "Retirement Planning"])
 
     # ---------- TAX PLANNING ----------
     with tax_tab:
-        st.subheader(f"Tax Summary ({sim_ty})")
+        st.markdown(f'<div style="font-size:1.3rem; font-weight:700; margin-bottom:0.2rem;">Tax Summary &mdash; {sim_ty}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         c1.metric("AGI", money(sim["agi"]))
         c2.metric("Total Taxes", money(sim["total_tax"]))
@@ -623,7 +757,7 @@ else:
             st.warning(msg)
 
         # --- Contribution Impact: cash-flow stacked bars (side-by-side) ---
-        st.subheader("Contribution Impact (cash-flow breakdown)")
+        st.markdown('<div style="font-size:1.15rem; font-weight:700; margin: 1rem 0 0.3rem 0;">Contribution Impact</div>', unsafe_allow_html=True)
 
         sim_std_ded = sim["std_ded"]
         sim_fed_br  = sim["fed_br"]
@@ -878,7 +1012,8 @@ else:
 
     # ---------- RETIREMENT PLANNING ----------
     with retire_tab:
-        st.subheader("FI Milestones (ordered by time)")
+        st.markdown('<div style="font-size:1.3rem; font-weight:700; margin-bottom:0.2rem;">FI Milestones</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
         ordered = []
         ordered_names = [
             "Coast FI",
@@ -913,7 +1048,7 @@ else:
 """)
 
         # ---- Growth chart ----
-        st.subheader("Investment Growth Over Time")
+        st.markdown('<div style="font-size:1.15rem; font-weight:700; margin: 1rem 0 0.3rem 0;">Investment Growth Over Time</div>', unsafe_allow_html=True)
         chart_units = st.radio(
             "Chart units", ["Nominal ($ at future dates)", "Real (today's $)"],
             index=1, horizontal=True, key="chart_units_mode"
@@ -1096,7 +1231,7 @@ else:
             st.pyplot(fig2)
 
         # ---- Snapshots & Buckets ----
-        st.subheader("Snapshot & Buckets")
+        st.markdown('<div style="font-size:1.15rem; font-weight:700; margin: 1rem 0 0.3rem 0;">Snapshot & Buckets</div>', unsafe_allow_html=True)
 
         # Segmented control (with radio fallback) for phone-friendly selection
         labels_map = {
@@ -1184,7 +1319,7 @@ else:
             st.dataframe(pd.DataFrame(acct_rows), use_container_width=True)
 
         # ---- Total Assets Summary (Nominal vs Real) ----
-        st.subheader("Total Assets Summary")
+        st.markdown('<div style="font-size:1.15rem; font-weight:700; margin: 1rem 0 0.3rem 0;">Total Assets Summary</div>', unsafe_allow_html=True)
         total_nominal = sum(snapshot_to_use.values())
         total_real = sum(real_snapshot.values())
         c1, c2 = st.columns(2)
@@ -1202,7 +1337,7 @@ else:
             st.altair_chart(bar, use_container_width=True)
 
         # ---- Income you could draw from the portfolio ----
-        st.subheader("Income You Could Draw")
+        st.markdown('<div style="font-size:1.15rem; font-weight:700; margin: 1rem 0 0.3rem 0;">Income You Could Draw</div>', unsafe_allow_html=True)
         st.caption("Pick withdrawal rates to preview sustainable income from this snapshot.")
 
         wrate_options = [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
