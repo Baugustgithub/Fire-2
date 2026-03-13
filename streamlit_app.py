@@ -281,27 +281,20 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ---- Tax year toggle: big, unmissable, right at the top ----
-st.markdown("""
-<div style="text-align:center; margin: -0.5rem 0 0.2rem 0;">
-    <span style="font-size:0.85rem; font-weight:600; color:#64748b; letter-spacing:0.05em; text-transform:uppercase;">
-        Select Calendar Year
-    </span>
-</div>
-""", unsafe_allow_html=True)
+# Tax year is selected in the sidebar — data resolution happens after sidebar widgets below
 
-_tc1, _tc2, _tc3 = st.columns([1, 1, 1])
-with _tc2:
-    tax_year = st.radio(
-        "Tax Year",
-        options=[2025, 2026],
-        index=0,
-        horizontal=True,
-        key="tax_year_toggle",
-        label_visibility="collapsed",
-    )
+# ---- Sidebar Inputs ----
+st.sidebar.header("Calendar Year")
+tax_year = st.sidebar.radio(
+    "Tax Year",
+    options=[2025, 2026],
+    index=0,
+    horizontal=True,
+    key="tax_year_toggle",
+    help="Switches tax brackets, standard deduction, and contribution limits.",
+)
 
-# Resolve year-specific data
+# Resolve year-specific data immediately after tax_year is set
 yd = TAX_DATA[tax_year]
 fed_brackets_single  = yd["federal_brackets_single"]
 fed_brackets_married = yd["federal_brackets_married"]
@@ -311,41 +304,6 @@ std_ded_married      = yd["standard_deduction_married"]
 yr_limits            = yd["limits"]
 va_529_cap           = yr_limits["529 (VA deduction cap)"]
 
-# ---- At-a-glance key numbers ----
-st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-g1, g2, g3, g4 = st.columns(4)
-g1.metric("Std. Deduction (Single)", money(std_ded_single))
-g2.metric("Std. Deduction (MFJ)", money(std_ded_married))
-g3.metric("IRA Limit", money(yr_limits["IRA (Traditional/Roth) combined"]))
-g4.metric("401k/403b/457b Limit", money(yr_limits["403(b) employee deferral"]))
-
-with st.expander(f"Full {tax_year} reference: brackets, limits & what changed", expanded=False):
-    ref_col1, ref_col2, ref_col3 = st.columns(3)
-    with ref_col1:
-        st.markdown(f"**Federal Brackets - Single**")
-        for start, rate in fed_brackets_single:
-            st.markdown(f"- {money(start)}+: **{pct(rate)}**")
-    with ref_col2:
-        st.markdown(f"**Federal Brackets - MFJ**")
-        for start, rate in fed_brackets_married:
-            st.markdown(f"- {money(start)}+: **{pct(rate)}**")
-    with ref_col3:
-        st.markdown(f"**All Contribution Limits**")
-        for label, val in yr_limits.items():
-            st.markdown(f"- {label}: **{money(val)}**")
-
-    if tax_year == 2026:
-        st.info(
-            "2026 brackets reflect the **One, Big, Beautiful Bill Act** (OBBBA) which made the TCJA "
-            "structure permanent with enhanced inflation adjustments for the 10% and 12% brackets."
-        )
-
-    st.caption(
-        "Simplified model: ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc. "
-        "Virginia 529 deduction capped at $4,000. SWR drives FI targets."
-    )
-
-# ---- Sidebar Inputs ----
 st.sidebar.header("Filing Status")
 filing_status = st.sidebar.selectbox("Select Filing Status", ["Single", "Married Filing Jointly"])
 
@@ -512,6 +470,40 @@ else:
 # =========================
 st.sidebar.divider()
 clicked = st.sidebar.button("Run / Update FIRE Simulation", type="primary", use_container_width=True)
+
+# ---- At-a-glance key numbers (main area, below hero banner) ----
+st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+g1, g2, g3, g4 = st.columns(4)
+g1.metric(f"Std. Deduction (Single) — {tax_year}", money(std_ded_single))
+g2.metric(f"Std. Deduction (MFJ) — {tax_year}", money(std_ded_married))
+g3.metric(f"IRA Limit — {tax_year}", money(yr_limits["IRA (Traditional/Roth) combined"]))
+g4.metric(f"401k/403b/457b — {tax_year}", money(yr_limits["403(b) employee deferral"]))
+
+with st.expander(f"Full {tax_year} reference: brackets, limits & what changed", expanded=False):
+    ref_col1, ref_col2, ref_col3 = st.columns(3)
+    with ref_col1:
+        st.markdown("**Federal Brackets - Single**")
+        for start, rate in fed_brackets_single:
+            st.markdown(f"- {money(start)}+: **{pct(rate)}**")
+    with ref_col2:
+        st.markdown("**Federal Brackets - MFJ**")
+        for start, rate in fed_brackets_married:
+            st.markdown(f"- {money(start)}+: **{pct(rate)}**")
+    with ref_col3:
+        st.markdown("**All Contribution Limits**")
+        for label, val in yr_limits.items():
+            st.markdown(f"- {label}: **{money(val)}**")
+
+    if tax_year == 2026:
+        st.info(
+            "2026 brackets reflect the **One, Big, Beautiful Bill Act** (OBBBA) which made the TCJA "
+            "structure permanent with enhanced inflation adjustments for the 10% and 12% brackets."
+        )
+
+    st.caption(
+        "Simplified model: ignores credits/phaseouts, SS/Medicare, LTCG/qualified dividends, NIIT, etc. "
+        "Virginia 529 deduction capped at $4,000. SWR drives FI targets."
+    )
 
 if clicked:
     # Resolve year-specific brackets & deduction
