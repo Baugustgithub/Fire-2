@@ -74,41 +74,31 @@ st.markdown("""
     margin: 0;
 }
 
-/* ---- Year toggle pills ---- */
-.year-toggle-container {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
+/* ---- Year toggle (make the radio buttons large & pill-like) ---- */
+[data-testid="stRadio"][aria-label="Tax Year"] > div {
+    justify-content: center;
+    gap: 0.75rem;
 }
-.year-toggle-label {
-    font-size: 0.85rem;
-    font-weight: 600;
-    opacity: 0.9;
-}
-.year-pill {
-    display: inline-block;
-    padding: 0.45rem 1.4rem;
-    border-radius: 2rem;
-    font-size: 0.95rem;
-    font-weight: 700;
+[data-testid="stRadio"][aria-label="Tax Year"] label {
+    font-size: 1.15rem !important;
+    font-weight: 700 !important;
+    padding: 0.6rem 2.5rem !important;
+    border: 2px solid #c7d2fe !important;
+    border-radius: 2rem !important;
+    background: #f8fafc;
+    transition: all 0.15s ease;
     cursor: pointer;
-    transition: all 0.2s ease;
-    text-decoration: none;
-    border: 2px solid rgba(255,255,255,0.4);
-    color: rgba(255,255,255,0.75);
-    background: rgba(255,255,255,0.1);
 }
-.year-pill.active {
-    background: white;
-    color: #4f46e5;
-    border-color: white;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+[data-testid="stRadio"][aria-label="Tax Year"] label:hover {
+    background: #eef2ff;
+    border-color: #818cf8 !important;
 }
-.year-pill:hover:not(.active) {
-    background: rgba(255,255,255,0.2);
-    border-color: rgba(255,255,255,0.6);
-    color: white;
+[data-testid="stRadio"][aria-label="Tax Year"] label[data-checked="true"],
+[data-testid="stRadio"][aria-label="Tax Year"] label:has(input:checked) {
+    background: linear-gradient(135deg, #4f46e5, #7c3aed) !important;
+    color: white !important;
+    border-color: #4f46e5 !important;
+    box-shadow: 0 3px 12px rgba(79,70,229,0.35);
 }
 
 /* ---- Section dividers ---- */
@@ -143,8 +133,6 @@ details[data-testid="stExpander"] summary {
     font-weight: 600;
 }
 
-/* ---- Hide default st.radio for year toggle (we use HTML pills + selectbox fallback) ---- */
-.year-toggle-radio { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -285,37 +273,33 @@ def recompute_tax_with_override(base_gross, pension_contrib, filing, contributio
 # ---- App ----
 # =========================
 
-# ---- Tax year state ----
-if "tax_year" not in st.session_state:
-    st.session_state["tax_year"] = 2025
-
-# ---- Hero banner with prominent year toggle ----
-def _pill_class(yr):
-    return "year-pill active" if yr == st.session_state["tax_year"] else "year-pill"
-
-st.markdown(f"""
+# ---- Hero banner ----
+st.markdown("""
 <div class="hero-banner">
     <h1>FIRE Tax + FI Planner</h1>
-    <p class="subtitle">Federal + Virginia  &mdash;  Tax brackets, contribution limits & FI projections</p>
-    <div class="year-toggle-container">
-        <span class="year-toggle-label">TAX YEAR:</span>
-        <span class="{_pill_class(2025)}" id="pill-2025">2025</span>
-        <span class="{_pill_class(2026)}" id="pill-2026">2026</span>
-    </div>
+    <p class="subtitle">Federal + Virginia &mdash; Tax brackets, contribution limits & FI projections</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Actual interactive toggle (streamlit selectbox styled compactly below the banner)
-tcol1, tcol2, tcol3 = st.columns([1, 2, 1])
-with tcol2:
-    tax_year = st.selectbox(
-        "Select Tax Year",
+# ---- Tax year toggle: big, unmissable, right at the top ----
+st.markdown("""
+<div style="text-align:center; margin: -0.5rem 0 0.2rem 0;">
+    <span style="font-size:0.85rem; font-weight:600; color:#64748b; letter-spacing:0.05em; text-transform:uppercase;">
+        Select Calendar Year
+    </span>
+</div>
+""", unsafe_allow_html=True)
+
+_tc1, _tc2, _tc3 = st.columns([1, 1, 1])
+with _tc2:
+    tax_year = st.radio(
+        "Tax Year",
         options=[2025, 2026],
-        index=[2025, 2026].index(st.session_state["tax_year"]),
-        key="tax_year_select",
+        index=0,
+        horizontal=True,
+        key="tax_year_toggle",
         label_visibility="collapsed",
     )
-    st.session_state["tax_year"] = tax_year
 
 # Resolve year-specific data
 yd = TAX_DATA[tax_year]
@@ -327,11 +311,8 @@ std_ded_married      = yd["standard_deduction_married"]
 yr_limits            = yd["limits"]
 va_529_cap           = yr_limits["529 (VA deduction cap)"]
 
-# Gradient divider
+# ---- At-a-glance key numbers ----
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-# ---- At-a-glance key numbers for the selected year ----
-st.markdown(f"##### {tax_year} Key Numbers at a Glance")
 g1, g2, g3, g4 = st.columns(4)
 g1.metric("Std. Deduction (Single)", money(std_ded_single))
 g2.metric("Std. Deduction (MFJ)", money(std_ded_married))
